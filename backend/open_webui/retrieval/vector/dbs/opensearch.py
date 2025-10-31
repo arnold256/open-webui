@@ -21,6 +21,7 @@ from open_webui.config import (
 class OpenSearchClient(VectorDBBase):
     def __init__(self):
         self.index_prefix = "open_webui"
+        self.supports_search_bm25 = True
         self.client = OpenSearch(
             hosts=[OPENSEARCH_URI],
             use_ssl=OPENSEARCH_SSL,
@@ -171,6 +172,48 @@ class OpenSearchClient(VectorDBBase):
             )
 
             return self._result_to_get_result(result)
+
+        except Exception as e:
+            return None
+
+    def search_bm25(
+        self, collection_name: str, query_text: str, limit: Optional[int] = None
+    ) -> Optional[SearchResult]:
+        """
+        Perform BM25 keyword search on text content.
+        
+        Uses OpenSearch's multi_match query for BM25 keyword search on text field.
+        
+        Args:
+            collection_name: Name of the collection to search
+            query_text: The text query for BM25 keyword search
+            limit: Maximum number of results to return
+        """
+        if not self.has_collection(collection_name):
+            return None
+
+        size = limit if limit else 10
+
+        # Build BM25 keyword search query
+        query_body = {
+            "size": size,
+            "_source": ["text", "metadata"],
+            "query": {
+                "multi_match": {
+                    "query": query_text,
+                    "fields": ["text"],
+                    "type": "best_fields",
+                    "fuzziness": "AUTO",
+                }
+            },
+        }
+
+        try:
+            result = self.client.search(
+                index=self._get_index_name(collection_name), body=query_body
+            )
+
+            return self._result_to_search_result(result)
 
         except Exception as e:
             return None
