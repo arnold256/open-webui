@@ -132,6 +132,40 @@ class VectorSearchRetriever(BaseRetriever):
         return results
 
 
+class BM25SearchRetriever(BaseRetriever):
+    collection_name: Any
+    top_k: int
+
+    def _get_relevant_documents(
+        self,
+        query: str,
+        *,
+        run_manager: CallbackManagerForRetrieverRun,
+    ) -> list[Document]:
+        result = VECTOR_DB_CLIENT.search_bm25(
+            collection_name=self.collection_name,
+            query_text=query,
+            limit=self.top_k,
+        )
+
+        if not result or not result.documents:
+            return []
+
+        ids = result.ids[0]
+        metadatas = result.metadatas[0]
+        documents = result.documents[0]
+
+        results = []
+        for idx in range(len(ids)):
+            results.append(
+                Document(
+                    metadata=metadatas[idx],
+                    page_content=documents[idx],
+                )
+            )
+        return results
+
+
 def query_doc(
     collection_name: str, query_embedding: list[float], k: int, user: UserModel = None
 ):
@@ -237,38 +271,52 @@ async def query_doc_with_hybrid_search(
 
         log.debug(f"query_doc_with_hybrid_search:doc {collection_name}")
 
-        bm25_texts = (
-            get_enriched_texts(collection_result)
-            if enable_enriched_texts
-            else collection_result.documents[0]
+        # Create retrievers based on what's available
+        retrievers = []
+        weights = []
+
+        # Add BM25 retriever
+        if hybrid_bm25_weight > 0:
+            if VECTOR_DB_CLIENT.supports_search_bm25:
+                log.debug("Using native DB search_bm25 for BM25 retrieval")
+                bm25_retriever = BM25SearchRetriever(
+                    collection_name=collection_name,
+                    top_k=k,
+                )
+            else:
+                log.debug("DB does not support native BM25, using in-memory BM25 fallback")
+                bm25_texts = (
+                    get_enriched_texts(collection_result)
+                    if enable_enriched_texts
+                    else collection_result.documents[0]
+                )
+                bm25_retriever = BM25Retriever.from_texts(
+                    texts=bm25_texts,
+                    metadatas=collection_result.metadatas[0],
+                )
+                bm25_retriever.k = k
+            
+            retrievers.append(bm25_retriever)
+            weights.append(hybrid_bm25_weight)
+
+        # Add vector search retriever if weight allows
+        if hybrid_bm25_weight < 1:
+            log.debug("Using VectorSearchRetriever for vector similarity")
+            vector_search_retriever = VectorSearchRetriever(
+                collection_name=collection_name,
+                embedding_function=embedding_function,
+                top_k=k,
+            )
+            retrievers.append(vector_search_retriever)
+            weights.append(1.0 - hybrid_bm25_weight)
+
+        # Create ensemble retriever
+        ensemble_retriever = EnsembleRetriever(
+            retrievers=retrievers,
+            weights=weights,
         )
 
-        bm25_retriever = BM25Retriever.from_texts(
-            texts=bm25_texts,
-            metadatas=collection_result.metadatas[0],
-        )
-        bm25_retriever.k = k
-
-        vector_search_retriever = VectorSearchRetriever(
-            collection_name=collection_name,
-            embedding_function=embedding_function,
-            top_k=k,
-        )
-
-        if hybrid_bm25_weight <= 0:
-            ensemble_retriever = EnsembleRetriever(
-                retrievers=[vector_search_retriever], weights=[1.0]
-            )
-        elif hybrid_bm25_weight >= 1:
-            ensemble_retriever = EnsembleRetriever(
-                retrievers=[bm25_retriever], weights=[1.0]
-            )
-        else:
-            ensemble_retriever = EnsembleRetriever(
-                retrievers=[bm25_retriever, vector_search_retriever],
-                weights=[hybrid_bm25_weight, 1.0 - hybrid_bm25_weight],
-            )
-
+        # Apply reranking compression
         compressor = RerankCompressor(
             embedding_function=embedding_function,
             top_n=k_reranker,

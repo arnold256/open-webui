@@ -31,6 +31,8 @@ class VectorDBBase(ABC):
     implement all abstract methods.
     """
 
+    supports_search_bm25: bool = False
+
     @abstractmethod
     def has_collection(self, collection_name: str) -> bool:
         """Check if the collection exists in the vector DB."""
@@ -64,6 +66,31 @@ class VectorDBBase(ABC):
     ) -> Optional[GetResult]:
         """Query vectors from a collection using metadata filter."""
         pass
+
+    def search_bm25(
+        self,
+        collection_name: str,
+        query_text: str,
+        limit: Optional[int] = None,
+    ) -> Optional[SearchResult]:
+        """
+        Perform BM25 keyword search on text content.
+        
+        This is an optional method. If not implemented by a subclass, calling it will raise NotImplementedError.
+        Implementations that support native BM25 keyword search should override this method.
+        
+        Args:
+            collection_name: Name of the collection to search
+            query_text: The text query for BM25 keyword search
+            limit: Maximum number of results to return
+            
+        Returns:
+            SearchResult with ids, documents, metadatas, and distances (scores), or None if not supported
+        """
+        raise NotImplementedError(
+            f"search_bm25 is not supported by {self.__class__.__name__}. "
+            "This vector database does not support native BM25 keyword search."
+        )
 
     @abstractmethod
     def get(self, collection_name: str) -> Optional[GetResult]:
