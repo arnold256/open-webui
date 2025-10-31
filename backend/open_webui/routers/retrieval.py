@@ -32,6 +32,8 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter, TokenTextSpl
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 from langchain_core.documents import Document
 
+from open_webui.retrieval.splitters.external_splitter import ExternalTextSplitter
+
 from open_webui.models.files import FileModel, FileUpdateForm, Files
 from open_webui.models.knowledge import Knowledges
 from open_webui.storage.provider import Storage
@@ -482,6 +484,8 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
         "RAG_EXTERNAL_RERANKER_API_KEY": request.app.state.config.RAG_EXTERNAL_RERANKER_API_KEY,
         # Chunking settings
         "TEXT_SPLITTER": request.app.state.config.TEXT_SPLITTER,
+        "TEXT_SPLITTER_API_URL": request.app.state.config.TEXT_SPLITTER_API_URL,
+        "TEXT_SPLITTER_API_KEY": request.app.state.config.TEXT_SPLITTER_API_KEY,
         "CHUNK_SIZE": request.app.state.config.CHUNK_SIZE,
         "CHUNK_OVERLAP": request.app.state.config.CHUNK_OVERLAP,
         # File upload settings
@@ -664,6 +668,8 @@ class ConfigForm(BaseModel):
 
     # Chunking settings
     TEXT_SPLITTER: Optional[str] = None
+    TEXT_SPLITTER_API_URL: Optional[str] = None
+    TEXT_SPLITTER_API_KEY: Optional[str] = None
     CHUNK_SIZE: Optional[int] = None
     CHUNK_OVERLAP: Optional[int] = None
 
@@ -951,6 +957,16 @@ async def update_rag_config(
         if form_data.TEXT_SPLITTER is not None
         else request.app.state.config.TEXT_SPLITTER
     )
+    request.app.state.config.TEXT_SPLITTER_API_URL = (
+        form_data.TEXT_SPLITTER_API_URL
+        if form_data.TEXT_SPLITTER_API_URL is not None
+        else request.app.state.config.TEXT_SPLITTER_API_URL
+    )
+    request.app.state.config.TEXT_SPLITTER_API_KEY = (
+        form_data.TEXT_SPLITTER_API_KEY
+        if form_data.TEXT_SPLITTER_API_KEY is not None
+        else request.app.state.config.TEXT_SPLITTER_API_KEY
+    )
     request.app.state.config.CHUNK_SIZE = (
         form_data.CHUNK_SIZE
         if form_data.CHUNK_SIZE is not None
@@ -1146,6 +1162,8 @@ async def update_rag_config(
         "RAG_EXTERNAL_RERANKER_API_KEY": request.app.state.config.RAG_EXTERNAL_RERANKER_API_KEY,
         # Chunking settings
         "TEXT_SPLITTER": request.app.state.config.TEXT_SPLITTER,
+        "TEXT_SPLITTER_API_URL": request.app.state.config.TEXT_SPLITTER_API_URL,
+        "TEXT_SPLITTER_API_KEY": request.app.state.config.TEXT_SPLITTER_API_KEY,
         "CHUNK_SIZE": request.app.state.config.CHUNK_SIZE,
         "CHUNK_OVERLAP": request.app.state.config.CHUNK_OVERLAP,
         # File upload settings
@@ -1333,8 +1351,23 @@ def save_docs_to_vector_db(
                     )
 
             docs = md_split_docs
+        elif request.app.state.config.TEXT_SPLITTER == "external":
+            log.info("Using external text splitter")
+            
+            try:
+                splitter = ExternalTextSplitter(
+                    url=request.app.state.config.TEXT_SPLITTER_API_URL,
+                    api_key=request.app.state.config.TEXT_SPLITTER_API_KEY,
+                    chunk_size=request.app.state.config.CHUNK_SIZE,
+                    chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
+                )
+                docs = splitter.split_documents(docs)
+                
+            except Exception as e:
+                log.error(f"External text splitter error: {e}")
+                raise Exception(f"External text splitter error: {str(e)}")
         else:
-            raise ValueError(ERROR_MESSAGES.DEFAULT("Invalid text splitter"))
+            raise ValueError(ERROR_MESSAGES.DEFAULT(f"Invalid text splitter: {request.app.state.config.TEXT_SPLITTER}. Valid options are: '', 'character', 'token', 'markdown_header', 'external'"))
 
     if len(docs) == 0:
         raise ValueError(ERROR_MESSAGES.EMPTY_CONTENT)

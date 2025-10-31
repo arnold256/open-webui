@@ -2770,6 +2770,17 @@ RAG_TEXT_SPLITTER = PersistentConfig(
     os.environ.get("RAG_TEXT_SPLITTER", ""),
 )
 
+RAG_TEXT_SPLITTER_API_URL = PersistentConfig(
+    "RAG_TEXT_SPLITTER_API_URL",
+    "rag.text_splitter_api_url",
+    os.environ.get("RAG_TEXT_SPLITTER_API_URL", ""),
+)
+
+RAG_TEXT_SPLITTER_API_KEY = PersistentConfig(
+    "RAG_TEXT_SPLITTER_API_KEY",
+    "rag.text_splitter_api_key",
+    os.environ.get("RAG_TEXT_SPLITTER_API_KEY", ""),
+)
 
 TIKTOKEN_CACHE_DIR = os.environ.get("TIKTOKEN_CACHE_DIR", f"{CACHE_DIR}/tiktoken")
 TIKTOKEN_ENCODING_NAME = PersistentConfig(
