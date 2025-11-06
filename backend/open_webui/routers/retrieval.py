@@ -163,6 +163,17 @@ def get_rf(
             except Exception as e:
                 log.error(f"ColBERT: {e}")
                 raise Exception(ERROR_MESSAGES.DEFAULT(e))
+        elif any(model in reranking_model for model in ["jinaai/jina-reranker-v3"]):
+            try:
+                from open_webui.retrieval.models.jina_reranker_v3 import JinaRerankerV3
+
+                rf = JinaRerankerV3(
+                    get_model_path(reranking_model, auto_update)
+                )
+
+            except Exception as e:
+                log.error(f"JinaRerankerV3: {e}")
+                raise Exception(ERROR_MESSAGES.DEFAULT(e))
         else:
             if engine == "external":
                 try:
