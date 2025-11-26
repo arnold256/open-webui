@@ -20,6 +20,7 @@ class ExternalDocumentLoader(BaseLoader):
         api_key: str,
         mime_type=None,
         user=None,
+        file_meta=None,
         **kwargs,
     ) -> None:
         self.url = url
@@ -29,6 +30,7 @@ class ExternalDocumentLoader(BaseLoader):
         self.mime_type = mime_type
 
         self.user = user
+        self.file_meta = file_meta or {}
 
     def load(self) -> List[Document]:
         with open(self.file_path, "rb") as f:
@@ -45,6 +47,16 @@ class ExternalDocumentLoader(BaseLoader):
             headers["X-Filename"] = quote(os.path.basename(self.file_path))
         except:
             pass
+
+        # Include file metadata in headers
+        if self.file_meta:
+            # Include custom metadata as JSON
+            if self.file_meta.get("data"):
+                try:
+                    import json
+                    headers["X-File-Metadata"] = quote(json.dumps(self.file_meta.get("data")))
+                except:
+                    pass
 
         if self.user is not None:
             headers = include_user_info_headers(headers, self.user)

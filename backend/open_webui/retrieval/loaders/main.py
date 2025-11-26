@@ -188,6 +188,7 @@ class Loader:
     def __init__(self, engine: str = "", **kwargs):
         self.engine = engine
         self.user = kwargs.get("user", None)
+        self.file_meta = kwargs.get("file_meta", None)
         self.kwargs = kwargs
 
     def load(
@@ -225,6 +226,7 @@ class Loader:
                 api_key=self.kwargs.get("EXTERNAL_DOCUMENT_LOADER_API_KEY"),
                 mime_type=file_content_type,
                 user=self.user,
+                file_meta=self.file_meta,
             )
         elif self.engine == "tika" and self.kwargs.get("TIKA_SERVER_URL"):
             if self._is_text_file(file_ext, file_content_type):
