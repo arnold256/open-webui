@@ -9,6 +9,8 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import time
 import re
+from collections import OrderedDict
+from threading import Lock
 
 from urllib.parse import quote
 from huggingface_hub import snapshot_download
@@ -49,6 +51,133 @@ from open_webui.config import (
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["RAG"])
+
+
+##########################################
+#
+# Embedding Cache
+#
+##########################################
+
+
+class EmbeddingCache:
+    """
+    A simple in-memory cache for embeddings with TTL (time-to-live) support.
+    Uses content hash as key to avoid redundant embedding generation.
+    """
+
+    def __init__(self, max_size: int = 10000, ttl_seconds: int = 3600):
+        """
+        Initialize the embedding cache.
+        
+        Args:
+            max_size: Maximum number of embeddings to cache (LRU eviction)
+            ttl_seconds: Time-to-live for cached embeddings in seconds (default: 1 hour)
+        """
+        self.max_size = max_size
+        self.ttl_seconds = ttl_seconds
+        self._cache: OrderedDict[str, tuple[list, float]] = OrderedDict()
+        self._lock = Lock()
+        self._hits = 0
+        self._misses = 0
+
+    def _compute_key(self, text: str, model: str, prefix: Optional[str] = None) -> str:
+        """Compute a cache key from text content, model, and prefix."""
+        key_content = f"{model}:{prefix or ''}:{text}"
+        return hashlib.sha256(key_content.encode()).hexdigest()
+
+    def get(self, text: str, model: str, prefix: Optional[str] = None) -> Optional[list]:
+        """
+        Get cached embedding for the given text.
+        
+        Returns:
+            The cached embedding vector, or None if not found or expired.
+        """
+        key = self._compute_key(text, model, prefix)
+        
+        with self._lock:
+            if key in self._cache:
+                embedding, timestamp = self._cache[key]
+                # Check if expired
+                if time.time() - timestamp < self.ttl_seconds:
+                    # Move to end (most recently used)
+                    self._cache.move_to_end(key)
+                    self._hits += 1
+                    return embedding
+                else:
+                    # Expired, remove it
+                    del self._cache[key]
+            
+            self._misses += 1
+            return None
+
+    def set(self, text: str, model: str, embedding: list, prefix: Optional[str] = None) -> None:
+        """
+        Cache an embedding for the given text.
+        """
+        key = self._compute_key(text, model, prefix)
+        
+        with self._lock:
+            # If key exists, update it
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            
+            self._cache[key] = (embedding, time.time())
+            
+            # Evict oldest if over capacity
+            while len(self._cache) > self.max_size:
+                self._cache.popitem(last=False)
+
+    def get_batch(self, texts: list[str], model: str, prefix: Optional[str] = None) -> tuple[list[Optional[list]], list[int]]:
+        """
+        Get cached embeddings for a batch of texts.
+        
+        Returns:
+            Tuple of (embeddings list with None for misses, indices of texts that need embedding)
+        """
+        results = []
+        missing_indices = []
+        
+        for i, text in enumerate(texts):
+            cached = self.get(text, model, prefix)
+            results.append(cached)
+            if cached is None:
+                missing_indices.append(i)
+        
+        return results, missing_indices
+
+    def set_batch(self, texts: list[str], model: str, embeddings: list[list], prefix: Optional[str] = None) -> None:
+        """
+        Cache embeddings for a batch of texts.
+        """
+        for text, embedding in zip(texts, embeddings):
+            self.set(text, model, embedding, prefix)
+
+    def clear(self) -> None:
+        """Clear all cached embeddings."""
+        with self._lock:
+            self._cache.clear()
+            self._hits = 0
+            self._misses = 0
+
+    def stats(self) -> dict:
+        """Get cache statistics."""
+        with self._lock:
+            total = self._hits + self._misses
+            hit_rate = self._hits / total if total > 0 else 0
+            return {
+                "size": len(self._cache),
+                "max_size": self.max_size,
+                "hits": self._hits,
+                "misses": self._misses,
+                "hit_rate": hit_rate,
+                "ttl_seconds": self.ttl_seconds,
+            }
+
+
+# Global embedding cache instance
+# TTL of 1 hour, max 10000 embeddings cached
+EMBEDDING_CACHE = EmbeddingCache(max_size=10000, ttl_seconds=3600)
 
 
 from typing import Any
@@ -835,7 +964,14 @@ def get_embedding_function(
     if embedding_engine == "":
         # Sentence transformers: CPU-bound sync operation
         async def async_embedding_function(query, prefix=None, user=None):
-            return await asyncio.to_thread(
+            # Check cache for single query
+            if isinstance(query, str):
+                cached = EMBEDDING_CACHE.get(query, embedding_model, prefix)
+                if cached is not None:
+                    log.debug(f"Embedding cache hit for text (model: {embedding_model})")
+                    return cached
+            
+            result = await asyncio.to_thread(
                 (
                     lambda query, prefix=None: embedding_function.encode(
                         query, **({"prompt": prefix} if prefix else {})
@@ -844,10 +980,18 @@ def get_embedding_function(
                 query,
                 prefix,
             )
+            
+            # Cache the result
+            if isinstance(query, str):
+                EMBEDDING_CACHE.set(query, embedding_model, result, prefix)
+            elif isinstance(query, list):
+                EMBEDDING_CACHE.set_batch(query, embedding_model, result, prefix)
+            
+            return result
 
         return async_embedding_function
     elif embedding_engine in ["ollama", "openai", "azure_openai"]:
-        embedding_function = lambda query, prefix=None, user=None: generate_embeddings(
+        raw_embedding_function = lambda query, prefix=None, user=None: generate_embeddings(
             engine=embedding_engine,
             model=embedding_model,
             text=query,
@@ -860,19 +1004,32 @@ def get_embedding_function(
 
         async def async_embedding_function(query, prefix=None, user=None):
             if isinstance(query, list):
-                # Create batches
+                # Check cache for batch
+                cached_results, missing_indices = EMBEDDING_CACHE.get_batch(query, embedding_model, prefix)
+                
+                if not missing_indices:
+                    # All embeddings are cached
+                    log.debug(f"Embedding cache hit for all {len(query)} texts (model: {embedding_model})")
+                    return cached_results
+                
+                # Get only the texts that need embedding
+                texts_to_embed = [query[i] for i in missing_indices]
+                
+                if len(texts_to_embed) < len(query):
+                    log.debug(f"Embedding cache: {len(query) - len(texts_to_embed)}/{len(query)} hits (model: {embedding_model})")
+                
+                # Create batches for texts that need embedding
                 batches = [
-                    query[i : i + embedding_batch_size]
-                    for i in range(0, len(query), embedding_batch_size)
+                    texts_to_embed[i : i + embedding_batch_size]
+                    for i in range(0, len(texts_to_embed), embedding_batch_size)
                 ]
 
                 if enable_async:
                     log.debug(
                         f"generate_multiple_async: Processing {len(batches)} batches in parallel"
                     )
-                    # Execute all batches in parallel
                     tasks = [
-                        embedding_function(batch, prefix=prefix, user=user)
+                        raw_embedding_function(batch, prefix=prefix, user=user)
                         for batch in batches
                     ]
                     batch_results = await asyncio.gather(*tasks)
@@ -883,21 +1040,42 @@ def get_embedding_function(
                     batch_results = []
                     for batch in batches:
                         batch_results.append(
-                            await embedding_function(batch, prefix=prefix, user=user)
+                            await raw_embedding_function(batch, prefix=prefix, user=user)
                         )
 
-                # Flatten results
-                embeddings = []
+                # Flatten new embeddings
+                new_embeddings = []
                 for batch_embeddings in batch_results:
                     if isinstance(batch_embeddings, list):
-                        embeddings.extend(batch_embeddings)
+                        new_embeddings.extend(batch_embeddings)
+
+                # Cache the new embeddings
+                EMBEDDING_CACHE.set_batch(texts_to_embed, embedding_model, new_embeddings, prefix)
+                
+                # Merge cached and new embeddings
+                new_idx = 0
+                final_embeddings = []
+                for i, cached in enumerate(cached_results):
+                    if cached is not None:
+                        final_embeddings.append(cached)
+                    else:
+                        final_embeddings.append(new_embeddings[new_idx])
+                        new_idx += 1
 
                 log.debug(
-                    f"generate_multiple_async: Generated {len(embeddings)} embeddings from {len(batches)} parallel batches"
+                    f"generate_multiple_async: Generated {len(new_embeddings)} new embeddings, {len(query) - len(new_embeddings)} from cache"
                 )
-                return embeddings
+                return final_embeddings
             else:
-                return await embedding_function(query, prefix, user)
+                # Single query
+                cached = EMBEDDING_CACHE.get(query, embedding_model, prefix)
+                if cached is not None:
+                    log.debug(f"Embedding cache hit for text (model: {embedding_model})")
+                    return cached
+                
+                result = await raw_embedding_function(query, prefix, user)
+                EMBEDDING_CACHE.set(query, embedding_model, result, prefix)
+                return result
 
         return async_embedding_function
     else:

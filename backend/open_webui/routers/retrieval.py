@@ -1517,6 +1517,7 @@ def process_file(
                 ]
 
                 text_content = form_data.content
+                docs_already_split = False
             elif form_data.collection_name:
                 # Check if the file has already been processed and save the content
                 # Usage: /knowledge/{id}/file/add, /knowledge/{id}/file/update
@@ -1526,6 +1527,7 @@ def process_file(
                 )
 
                 if result is not None and len(result.ids[0]) > 0:
+                    # Documents from vector DB are already split - don't split again
                     docs = [
                         Document(
                             page_content=result.documents[0][idx],
@@ -1533,6 +1535,7 @@ def process_file(
                         )
                         for idx, id in enumerate(result.ids[0])
                     ]
+                    docs_already_split = True
                 else:
                     docs = [
                         Document(
@@ -1546,6 +1549,7 @@ def process_file(
                             },
                         )
                     ]
+                    docs_already_split = False
 
                 text_content = file.data.get("content", "")
             else:
@@ -1616,6 +1620,7 @@ def process_file(
                         )
                     ]
                 text_content = " ".join([doc.page_content for doc in docs])
+                docs_already_split = False
 
             log.debug(f"text_content: {text_content}")
             Files.update_file_data_by_id(
@@ -1645,6 +1650,7 @@ def process_file(
                             "hash": hash,
                         },
                         add=(True if form_data.collection_name else False),
+                        split=(not docs_already_split),  # Don't re-split already-split docs
                         user=user,
                     )
                     log.info(f"added {len(docs)} items to collection {collection_name}")
