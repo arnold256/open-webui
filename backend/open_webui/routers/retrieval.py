@@ -1501,6 +1501,8 @@ def process_file(
             if collection_name is None:
                 collection_name = f"file-{file.id}"
 
+            loader_metadata = None
+
             if form_data.content:
                 # Update the content in the file
                 # Usage: /files/{file_id}/data/content/update, /files/ (audio file upload pipeline)
@@ -1604,6 +1606,15 @@ def process_file(
                         file.filename, file.meta.get("content_type"), file_path
                     )
 
+                    # Extract loader metadata to save later with other file updates
+                    loader_metadata = {}
+                    for doc in docs:
+                        if doc.metadata:
+                            # Collect metadata, excluding internal fields
+                            for key, value in doc.metadata.items():
+                                if key not in ["name", "created_by", "file_id", "source"] and key not in loader_metadata:
+                                    loader_metadata[key] = value
+
                     docs = [
                         Document(
                             page_content=doc.page_content,
@@ -1640,6 +1651,10 @@ def process_file(
             )
             hash = calculate_sha256_string(text_content)
             Files.update_file_hash_by_id(file.id, hash)
+            
+            # Save loader metadata if extracted from document loader
+            if loader_metadata:
+                Files.update_file_metadata_by_id(file.id, {"loader_metadata": loader_metadata})
 
             if request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL:
                 Files.update_file_data_by_id(file.id, {"status": "completed"})
