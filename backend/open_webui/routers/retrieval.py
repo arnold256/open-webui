@@ -1929,6 +1929,10 @@ async def process_file(
                 await _validate_collection_access([collection_name], user, access_type='write')
             collection_names = [collection_name]
 
+            # Documents read back out of a per-file collection are already chunked;
+            # splitting them a second time would fragment the stored chunks further.
+            docs_already_split = False
+
             if form_data.content:
                 # Update the content in the file
                 # Usage: /files/{file_id}/data/content/update, /files/ (audio file upload pipeline)
@@ -1974,6 +1978,7 @@ async def process_file(
                         )
                         for idx, id in enumerate(file_result.ids[0])
                     ]
+                    docs_already_split = True
                 elif stored_content is not None:
                     # Repair path: vector chunks are missing, but SQL still has the file text.
                     docs = [
@@ -2088,6 +2093,7 @@ async def process_file(
                                 'name': file.filename,
                                 'hash': hash,
                             },
+                            split=not docs_already_split,
                             add=(True if form_data.collection_name else False),
                             user=user,
                         )
