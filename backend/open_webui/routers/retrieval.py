@@ -86,7 +86,7 @@ from open_webui.retrieval.utils import (
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
 from open_webui.retrieval.vector.factory import get_vector_db_client
 from open_webui.retrieval.vector.main import GetResult
-from open_webui.retrieval.vector.utils import filter_metadata
+from open_webui.retrieval.vector.utils import filter_metadata, process_metadata
 from open_webui.retrieval.web.azure import search_azure
 from open_webui.retrieval.web.bing import search_bing
 from open_webui.retrieval.web.bocha import search_bocha
@@ -141,6 +141,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 log = logging.getLogger(__name__)
 
 TIKTOKEN_DISALLOWED_SPECIAL = ()
+
+# Fields Open WebUI sets on chunk metadata itself; they carry no loader information
+# and are already stored on the file record.
+LOADER_METADATA_KEYS_TO_EXCLUDE = {'name', 'created_by', 'file_id', 'source'}
 
 ##########################################
 #
@@ -2064,6 +2068,7 @@ async def process_file(
             # splitting them a second time would fragment the stored chunks further.
             docs_already_split = False
             reusable_vectors = None
+            loader_metadata = None
 
             if form_data.content:
                 # Update the content in the file
@@ -2154,6 +2159,15 @@ async def process_file(
                     }
                     docs = await loader.aload(file.filename, file.meta.get('content_type'), file_path)
 
+                    # Keep whatever the loader reported about the document (title, author,
+                    # page count, ...) on the file record, so it stays reachable without
+                    # having to read a chunk back out of the vector database.
+                    loader_metadata = {}
+                    for doc in docs:
+                        for key, value in process_metadata(doc.metadata or {}).items():
+                            if key not in LOADER_METADATA_KEYS_TO_EXCLUDE:
+                                loader_metadata.setdefault(key, value)
+
                     docs = [
                         Document(
                             page_content=doc.page_content,
@@ -2192,6 +2206,8 @@ async def process_file(
             hash = calculate_sha256_string(text_content)
 
             if config.BYPASS_EMBEDDING_AND_RETRIEVAL:
+                if loader_metadata:
+                    await Files.update_file_metadata_by_id(file.id, {'loader_metadata': loader_metadata}, db=db)
                 await Files.update_file_data_by_id(file.id, {'status': 'completed', 'error': None}, db=db)
                 await Files.update_file_hash_by_id(file.id, hash, db=db)
                 await publish_event(
@@ -2247,6 +2263,7 @@ async def process_file(
                                 file.id,
                                 {
                                     'collection_name': collection_name,
+                                    **({'loader_metadata': loader_metadata} if loader_metadata else {}),
                                 },
                                 db=session,
                             )
