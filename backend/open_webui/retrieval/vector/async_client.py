@@ -134,6 +134,14 @@ class AsyncVectorDBClient:
     ) -> Optional[GetResult]:
         return await asyncio.to_thread(self._sync.query, collection_name, filter, limit)
 
+    async def query_with_vectors(
+        self,
+        collection_name: str,
+        filter: Dict,
+        limit: Optional[int] = None,
+    ) -> Optional[GetResult]:
+        return await asyncio.to_thread(self._sync.query_with_vectors, collection_name, filter, limit)
+
     async def get(self, collection_name: str) -> Optional[GetResult]:
         return await asyncio.to_thread(self._sync.get, collection_name)
 

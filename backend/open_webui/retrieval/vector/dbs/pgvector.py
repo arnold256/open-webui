@@ -648,6 +648,51 @@ class PgvectorClient(VectorDBBase):
             log.exception(f'Error during query: {e}')
             return None
 
+    def query_with_vectors(
+        self, collection_name: str, filter: Dict[str, Any], limit: Optional[int] = None
+    ) -> Optional[GetResult]:
+        """`query`, plus the stored embedding for each row.
+
+        Not available under pgcrypto: that path selects decrypted columns explicitly
+        and never loads the ORM rows the vectors hang off.
+        """
+        if PGVECTOR_PGCRYPTO:
+            return None
+
+        try:
+            query = self.session.query(DocumentChunk).filter(DocumentChunk.collection_name == collection_name)
+
+            for key, value in filter.items():
+                query = query.filter(DocumentChunk.vmetadata[key].astext == str(value))
+
+            if limit is not None:
+                query = query.limit(limit)
+
+            results = query.all()
+
+            if not results:
+                return None
+
+            if any(row.vector is None for row in results):
+                # Nothing to reuse if part of the collection was stored without vectors.
+                self.session.rollback()
+                return None
+
+            result = GetResult(
+                ids=[[row.id for row in results]],
+                documents=[[row.text for row in results]],
+                metadatas=[[row.vmetadata for row in results]],
+                # `float()` because pgvector hands back numpy scalars.
+                vectors=[[[float(value) for value in row.vector] for row in results]],
+            )
+
+            self.session.rollback()  # read-only transaction
+            return result
+        except Exception as e:
+            self.session.rollback()
+            log.exception(f'Error during query_with_vectors: {e}')
+            return None
+
     def get(self, collection_name: str, limit: Optional[int] = None) -> Optional[GetResult]:
         try:
             if PGVECTOR_PGCRYPTO:

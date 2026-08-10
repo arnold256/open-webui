@@ -78,6 +78,7 @@ from open_webui.retrieval.utils import (
 )
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
+from open_webui.retrieval.vector.main import GetResult
 from open_webui.retrieval.vector.utils import filter_metadata
 from open_webui.retrieval.web.azure import search_azure
 from open_webui.retrieval.web.bing import search_bing
@@ -1616,6 +1617,52 @@ def get_splitter_length_function(
     return len
 
 
+def _reusable_vectors(result: GetResult, config: RetrievalConfig) -> list | None:
+    """Vectors from `result`, but only if they match the configured embedding model.
+
+    Stored chunks record the engine and model that produced them. If either has
+    changed since, the old vectors are not comparable with newly embedded queries
+    and have to be regenerated.
+    """
+    if not result.vectors or not result.vectors[0]:
+        return None
+
+    vectors = result.vectors[0]
+    metadatas = result.metadatas[0] if result.metadatas else []
+
+    if len(vectors) != len(metadatas):
+        return None
+
+    expected = {'engine': config.RAG_EMBEDDING_ENGINE, 'model': config.RAG_EMBEDDING_MODEL}
+    for metadata in metadatas:
+        if (metadata or {}).get('embedding_config') != expected:
+            log.info('not reusing stored embeddings: they were generated with a different embedding model')
+            return None
+
+    return vectors
+
+
+def _insert_items(collection_name: str, texts: list, embeddings: list, metadatas: list) -> bool:
+    items = [
+        {
+            'id': str(uuid.uuid4()),
+            'text': text,
+            'vector': embeddings[idx],
+            'metadata': metadatas[idx],
+        }
+        for idx, text in enumerate(texts)
+    ]
+
+    log.info('adding to collection %s', collection_name)
+    VECTOR_DB_CLIENT.insert(
+        collection_name=collection_name,
+        items=items,
+    )
+
+    log.info('added %s items to collection %s', len(items), collection_name)
+    return True
+
+
 def save_docs_to_vector_db(
     request: Request,
     docs,
@@ -1625,6 +1672,7 @@ def save_docs_to_vector_db(
     overwrite: bool = False,
     split: bool = True,
     add: bool = False,
+    vectors: list | None = None,
     user=None,
 ) -> bool:
     def _get_docs_info(docs: list[Document]) -> str:
@@ -1757,6 +1805,18 @@ def save_docs_to_vector_db(
                 log.info('collection %s already exists, overwrite is False and add is False', collection_name)
                 return True
 
+        if vectors is not None and len(vectors) == len(texts):
+            log.info('reusing %s existing embeddings for %s', len(vectors), collection_name)
+            return _insert_items(collection_name, texts, vectors, metadatas)
+
+        if vectors is not None:
+            log.warning(
+                'ignoring %s reusable embeddings for %s: %s documents to embed',
+                len(vectors),
+                collection_name,
+                len(texts),
+            )
+
         log.info('generating embeddings for %s', collection_name)
         embedding_function = get_embedding_function(
             config.RAG_EMBEDDING_ENGINE,
@@ -1803,24 +1863,7 @@ def save_docs_to_vector_db(
         embeddings = future.result(timeout=embedding_timeout)
         log.info('embeddings generated %s for %s items', len(embeddings), len(texts))
 
-        items = [
-            {
-                'id': str(uuid.uuid4()),
-                'text': text,
-                'vector': embeddings[idx],
-                'metadata': metadatas[idx],
-            }
-            for idx, text in enumerate(texts)
-        ]
-
-        log.info('adding to collection %s', collection_name)
-        VECTOR_DB_CLIENT.insert(
-            collection_name=collection_name,
-            items=items,
-        )
-
-        log.info('added %s items to collection %s', len(items), collection_name)
-        return True
+        return _insert_items(collection_name, texts, embeddings, metadatas)
     except Exception as e:
         log.exception(e)
         raise e
@@ -1863,6 +1906,7 @@ async def process_file(
             # Documents read back out of a per-file collection are already chunked;
             # splitting them a second time would fragment the stored chunks further.
             docs_already_split = False
+            reusable_vectors = None
 
             if form_data.content:
                 # Update the content in the file
@@ -1893,9 +1937,16 @@ async def process_file(
                 # Check if the file has already been processed and save the content
                 # Usage: /knowledge/{id}/file/add, /knowledge/{id}/file/update
 
-                result = await ASYNC_VECTOR_DB_CLIENT.query(
+                # These chunks were embedded when the file itself was processed. Ask for
+                # the stored vectors too so they can be reused rather than recomputed;
+                # backends that cannot return them fall back to plain `query`.
+                result = await ASYNC_VECTOR_DB_CLIENT.query_with_vectors(
                     collection_name=f'file-{file.id}', filter={'file_id': file.id}
                 )
+                if result is None:
+                    result = await ASYNC_VECTOR_DB_CLIENT.query(
+                        collection_name=f'file-{file.id}', filter={'file_id': file.id}
+                    )
 
                 if result is not None and len(result.ids[0]) > 0:
                     docs = [
@@ -1906,6 +1957,7 @@ async def process_file(
                         for idx, id in enumerate(result.ids[0])
                     ]
                     docs_already_split = True
+                    reusable_vectors = _reusable_vectors(result, config)
                 else:
                     docs = [
                         Document(
@@ -2015,6 +2067,7 @@ async def process_file(
                         },
                         split=not docs_already_split,
                         add=(True if form_data.collection_name else False),
+                        vectors=reusable_vectors,
                         user=user,
                     )
                     log.info('added %s items to collection %s', len(docs), collection_name)

@@ -15,6 +15,8 @@ class GetResult(BaseModel):
     ids: Optional[List[List[str]]]
     documents: Optional[List[List[str]]]
     metadatas: Optional[List[List[Any]]]
+    # Only populated by `query_with_vectors`; `None` everywhere else.
+    vectors: Optional[List[List[List[float | int]]]] = None
 
 
 class SearchResult(GetResult):
@@ -79,6 +81,16 @@ class VectorDBBase(ABC):
     def query(self, collection_name: str, filter: Dict, limit: Optional[int] = None) -> Optional[GetResult]:
         """Query vectors from a collection using metadata filter."""
         pass
+
+    def query_with_vectors(
+        self, collection_name: str, filter: Dict, limit: Optional[int] = None
+    ) -> Optional[GetResult]:
+        """Same as `query`, but the result also carries the stored vectors.
+
+        Optional. Backends that cannot cheaply return vectors leave this returning
+        `None`, and callers fall back to `query` plus re-embedding.
+        """
+        return None
 
     @abstractmethod
     def get(self, collection_name: str) -> Optional[GetResult]:
