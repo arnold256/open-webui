@@ -1042,6 +1042,22 @@ RAG_EXTERNAL_RERANKER_TIMEOUT = os.getenv('RAG_EXTERNAL_RERANKER_TIMEOUT', '')
 
 RAG_TEXT_SPLITTER = os.getenv('RAG_TEXT_SPLITTER', '')
 
+EXTERNAL_TEXT_SPLITTER_URL = os.getenv('EXTERNAL_TEXT_SPLITTER_URL', '')
+
+EXTERNAL_TEXT_SPLITTER_API_KEY = os.getenv('EXTERNAL_TEXT_SPLITTER_API_KEY', '')
+
+EXTERNAL_TEXT_SPLITTER_TIMEOUT = os.getenv('EXTERNAL_TEXT_SPLITTER_TIMEOUT', '')
+
+external_text_splitter_headers = os.getenv('EXTERNAL_TEXT_SPLITTER_HEADERS', '')
+try:
+    external_text_splitter_headers = JSONCodec.loads(external_text_splitter_headers)
+except JSONCodec.JSONDecodeError:
+    external_text_splitter_headers = {}
+if not isinstance(external_text_splitter_headers, dict):
+    external_text_splitter_headers = {}
+
+EXTERNAL_TEXT_SPLITTER_HEADERS = external_text_splitter_headers
+
 ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER = os.getenv('ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER', 'True').lower() == 'true'
 
 
@@ -2896,6 +2912,10 @@ DEFAULT_CONFIG = {
     'rag.external_reranker_api_key': RAG_EXTERNAL_RERANKER_API_KEY,
     'rag.external_reranker_timeout': RAG_EXTERNAL_RERANKER_TIMEOUT,
     'rag.text_splitter': RAG_TEXT_SPLITTER,
+    'rag.external_text_splitter_url': EXTERNAL_TEXT_SPLITTER_URL,
+    'rag.external_text_splitter_api_key': EXTERNAL_TEXT_SPLITTER_API_KEY,
+    'rag.external_text_splitter_timeout': EXTERNAL_TEXT_SPLITTER_TIMEOUT,
+    'rag.external_text_splitter_headers': EXTERNAL_TEXT_SPLITTER_HEADERS,
     'rag.enable_markdown_header_text_splitter': ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER,
     'rag.tiktoken_encoding_name': TIKTOKEN_ENCODING_NAME,
     'rag.chunk_size': CHUNK_SIZE,

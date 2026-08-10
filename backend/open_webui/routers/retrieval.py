@@ -63,6 +63,7 @@ from open_webui.models.config import Config
 
 # Document loaders
 from open_webui.retrieval.loaders.youtube import YoutubeLoader
+from open_webui.retrieval.splitters.external_splitter import ExternalTextSplitter
 from open_webui.retrieval.utils import (
     build_loader_from_config,
     get_loader_config,
@@ -119,6 +120,10 @@ from open_webui.storage.provider import Storage
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.access_control.files import has_access_to_file
 from open_webui.utils.auth import get_admin_user, get_verified_user
+from open_webui.utils.headers import (
+    custom_headers_require_user_groups,
+    get_user_groups_for_custom_headers,
+)
 from open_webui.utils.misc import (
     calculate_sha256_string,
     sanitize_text_for_db,
@@ -299,6 +304,10 @@ RETRIEVAL_CONFIG_KEYS = {
     'EXTERNAL_DOCUMENT_LOADER_API_KEY': 'rag.external_document_loader_api_key',
     'EXTERNAL_DOCUMENT_LOADER_HEADERS': 'rag.external_document_loader_headers',
     'EXTERNAL_DOCUMENT_LOADER_URL': 'rag.external_document_loader_url',
+    'EXTERNAL_TEXT_SPLITTER_API_KEY': 'rag.external_text_splitter_api_key',
+    'EXTERNAL_TEXT_SPLITTER_HEADERS': 'rag.external_text_splitter_headers',
+    'EXTERNAL_TEXT_SPLITTER_TIMEOUT': 'rag.external_text_splitter_timeout',
+    'EXTERNAL_TEXT_SPLITTER_URL': 'rag.external_text_splitter_url',
     'EXTERNAL_WEB_LOADER_API_KEY': 'web.loader.external_web_loader_api_key',
     'EXTERNAL_WEB_LOADER_URL': 'web.loader.external_web_loader_url',
     'EXTERNAL_WEB_SEARCH_API_KEY': 'web.search.external_web_search_api_key',
@@ -676,6 +685,10 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
         'RAG_EXTERNAL_RERANKER_TIMEOUT': config.RAG_EXTERNAL_RERANKER_TIMEOUT,
         # Chunking settings
         'TEXT_SPLITTER': config.TEXT_SPLITTER,
+        'EXTERNAL_TEXT_SPLITTER_URL': config.EXTERNAL_TEXT_SPLITTER_URL,
+        'EXTERNAL_TEXT_SPLITTER_API_KEY': config.EXTERNAL_TEXT_SPLITTER_API_KEY,
+        'EXTERNAL_TEXT_SPLITTER_HEADERS': config.EXTERNAL_TEXT_SPLITTER_HEADERS,
+        'EXTERNAL_TEXT_SPLITTER_TIMEOUT': config.EXTERNAL_TEXT_SPLITTER_TIMEOUT,
         'RAG_TOKENIZER_MODEL': config.RAG_TOKENIZER_MODEL,
         'ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER': config.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER,
         'CHUNK_SIZE': config.CHUNK_SIZE,
@@ -914,6 +927,10 @@ class ConfigForm(BaseModel):
 
     # Chunking settings
     TEXT_SPLITTER: str | None = None
+    EXTERNAL_TEXT_SPLITTER_URL: str | None = None
+    EXTERNAL_TEXT_SPLITTER_API_KEY: str | None = None
+    EXTERNAL_TEXT_SPLITTER_HEADERS: dict | None = None
+    EXTERNAL_TEXT_SPLITTER_TIMEOUT: Union[int, str | None] = None
     RAG_TOKENIZER_MODEL: str | None = None
     ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER: bool | None = None
     CHUNK_SIZE: int | None = None
@@ -1194,6 +1211,26 @@ async def update_rag_config(request: Request, form_data: ConfigForm, user=Depend
 
     # Chunking settings
     config.TEXT_SPLITTER = form_data.TEXT_SPLITTER if form_data.TEXT_SPLITTER is not None else config.TEXT_SPLITTER
+    config.EXTERNAL_TEXT_SPLITTER_URL = (
+        form_data.EXTERNAL_TEXT_SPLITTER_URL
+        if form_data.EXTERNAL_TEXT_SPLITTER_URL is not None
+        else config.EXTERNAL_TEXT_SPLITTER_URL
+    )
+    config.EXTERNAL_TEXT_SPLITTER_API_KEY = (
+        form_data.EXTERNAL_TEXT_SPLITTER_API_KEY
+        if form_data.EXTERNAL_TEXT_SPLITTER_API_KEY is not None
+        else config.EXTERNAL_TEXT_SPLITTER_API_KEY
+    )
+    config.EXTERNAL_TEXT_SPLITTER_HEADERS = (
+        form_data.EXTERNAL_TEXT_SPLITTER_HEADERS
+        if form_data.EXTERNAL_TEXT_SPLITTER_HEADERS is not None
+        else config.EXTERNAL_TEXT_SPLITTER_HEADERS
+    )
+    config.EXTERNAL_TEXT_SPLITTER_TIMEOUT = (
+        form_data.EXTERNAL_TEXT_SPLITTER_TIMEOUT
+        if form_data.EXTERNAL_TEXT_SPLITTER_TIMEOUT is not None
+        else config.EXTERNAL_TEXT_SPLITTER_TIMEOUT
+    )
     config.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER = (
         form_data.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER
         if form_data.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER is not None
@@ -1383,6 +1420,10 @@ async def update_rag_config(request: Request, form_data: ConfigForm, user=Depend
         'RAG_EXTERNAL_RERANKER_TIMEOUT': config.RAG_EXTERNAL_RERANKER_TIMEOUT,
         # Chunking settings
         'TEXT_SPLITTER': config.TEXT_SPLITTER,
+        'EXTERNAL_TEXT_SPLITTER_URL': config.EXTERNAL_TEXT_SPLITTER_URL,
+        'EXTERNAL_TEXT_SPLITTER_API_KEY': config.EXTERNAL_TEXT_SPLITTER_API_KEY,
+        'EXTERNAL_TEXT_SPLITTER_HEADERS': config.EXTERNAL_TEXT_SPLITTER_HEADERS,
+        'EXTERNAL_TEXT_SPLITTER_TIMEOUT': config.EXTERNAL_TEXT_SPLITTER_TIMEOUT,
         'RAG_TOKENIZER_MODEL': config.RAG_TOKENIZER_MODEL,
         'CHUNK_SIZE': config.CHUNK_SIZE,
         'CHUNK_MIN_SIZE_TARGET': config.CHUNK_MIN_SIZE_TARGET,
@@ -1663,6 +1704,27 @@ def _insert_items(collection_name: str, texts: list, embeddings: list, metadatas
     return True
 
 
+def resolve_user_groups_for_headers(request: Request, custom_headers: dict | None, user) -> list | None:
+    """Resolve ``{{USER_GROUPS}}`` placeholders from a synchronous worker thread.
+
+    ``save_docs_to_vector_db`` runs under ``run_in_threadpool``, so the async group
+    lookup has to be scheduled back onto the main loop — the same bridge already used
+    for embeddings further down this module.
+    """
+    if user is None or not custom_headers_require_user_groups(custom_headers):
+        return None
+
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            get_user_groups_for_custom_headers(custom_headers, user),
+            request.app.state.main_loop,
+        )
+        return future.result(timeout=10)
+    except Exception:
+        log.exception('Failed to resolve user groups for custom headers')
+        return None
+
+
 def save_docs_to_vector_db(
     request: Request,
     docs,
@@ -1715,7 +1777,9 @@ def save_docs_to_vector_db(
                     raise ValueError(ERROR_MESSAGES.DUPLICATE_CONTENT)
 
     if split:
-        if config.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER:
+        # The external splitter owns chunking end to end; pre-fragmenting here would
+        # hide the document structure from the service it is being delegated to.
+        if config.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER and config.TEXT_SPLITTER != 'external':
             log.info('Using markdown header text splitter')
             # Define headers to split on - covering most common markdown header levels
             markdown_splitter = MarkdownHeaderTextSplitter(
@@ -1773,6 +1837,30 @@ def save_docs_to_vector_db(
                 chunk_overlap=config.CHUNK_OVERLAP,
                 length_function=get_splitter_length_function(request, config),
                 add_start_index=True,
+            )
+            docs = text_splitter.split_documents(docs)
+        elif config.TEXT_SPLITTER == 'external':
+            log.info('Using external text splitter')
+
+            if not config.EXTERNAL_TEXT_SPLITTER_URL:
+                raise ValueError(ERROR_MESSAGES.DEFAULT('External text splitter URL is not configured'))
+
+            splitter_metadata = {**(metadata or {})}
+            if 'name' in splitter_metadata:
+                # `{{FILE_NAME}}` mirrors the placeholder exposed by the external document loader.
+                splitter_metadata.setdefault('file_name', splitter_metadata['name'])
+
+            text_splitter = ExternalTextSplitter(
+                url=config.EXTERNAL_TEXT_SPLITTER_URL,
+                api_key=config.EXTERNAL_TEXT_SPLITTER_API_KEY,
+                chunk_size=config.CHUNK_SIZE,
+                chunk_overlap=config.CHUNK_OVERLAP,
+                # Blank means "no limit", matching the external reranker's timeout setting.
+                timeout=(int(config.EXTERNAL_TEXT_SPLITTER_TIMEOUT) if config.EXTERNAL_TEXT_SPLITTER_TIMEOUT else None),
+                user=user,
+                user_groups=resolve_user_groups_for_headers(request, config.EXTERNAL_TEXT_SPLITTER_HEADERS, user),
+                headers=config.EXTERNAL_TEXT_SPLITTER_HEADERS,
+                metadata=splitter_metadata,
             )
             docs = text_splitter.split_documents(docs)
         else:
