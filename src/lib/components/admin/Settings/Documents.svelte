@@ -44,6 +44,7 @@
 	let showResetUploadDirConfirm = false;
 	let showReindexConfirm = false;
 	let showExternalDocumentLoaderHeadersHint = false;
+	let showExternalTextSplitterHeadersHint = false;
 
 	let RAG_EMBEDDING_ENGINE = '';
 	let RAG_EMBEDDING_MODEL = '';
@@ -181,6 +182,22 @@
 				return;
 			}
 		}
+		if (RAGConfig.TEXT_SPLITTER === 'external' && RAGConfig.EXTERNAL_TEXT_SPLITTER_URL === '') {
+			toast.error($i18n.t('External Text Splitter URL required.'));
+			return;
+		}
+		if (RAGConfig.TEXT_SPLITTER === 'external' && RAGConfig.EXTERNAL_TEXT_SPLITTER_HEADERS) {
+			try {
+				const headers = JSON.parse(RAGConfig.EXTERNAL_TEXT_SPLITTER_HEADERS);
+				if (headers === null || typeof headers !== 'object' || Array.isArray(headers)) {
+					throw new Error('Headers must be a valid JSON object');
+				}
+				RAGConfig.EXTERNAL_TEXT_SPLITTER_HEADERS = JSON.stringify(headers, null, 2);
+			} catch (error) {
+				toast.error($i18n.t('Headers must be a valid JSON object'));
+				return;
+			}
+		}
 		if (RAGConfig.CONTENT_EXTRACTION_ENGINE === 'tika' && RAGConfig.TIKA_SERVER_URL === '') {
 			toast.error($i18n.t('Tika Server URL required.'));
 			return;
@@ -278,6 +295,12 @@
 				RAGConfig.EXTERNAL_DOCUMENT_LOADER_HEADERS.trim() !== ''
 					? JSON.parse(RAGConfig.EXTERNAL_DOCUMENT_LOADER_HEADERS)
 					: {},
+			EXTERNAL_TEXT_SPLITTER_HEADERS:
+				typeof RAGConfig.EXTERNAL_TEXT_SPLITTER_HEADERS === 'string' &&
+				RAGConfig.EXTERNAL_TEXT_SPLITTER_HEADERS.trim() !== ''
+					? JSON.parse(RAGConfig.EXTERNAL_TEXT_SPLITTER_HEADERS)
+					: {},
+			EXTERNAL_TEXT_SPLITTER_TIMEOUT: RAGConfig.EXTERNAL_TEXT_SPLITTER_TIMEOUT ?? '',
 			CONTENT_EXTRACTION_SUPPORTED_MEDIA_MIME_TYPES:
 				RAGConfig.CONTENT_EXTRACTION_SUPPORTED_MEDIA_MIME_TYPES === null
 					? undefined
@@ -338,6 +361,13 @@
 					? JSON.stringify(config.EXTERNAL_DOCUMENT_LOADER_HEADERS, null, 2)
 					: ''
 				: config.EXTERNAL_DOCUMENT_LOADER_HEADERS;
+
+		config.EXTERNAL_TEXT_SPLITTER_HEADERS =
+			typeof config.EXTERNAL_TEXT_SPLITTER_HEADERS === 'object'
+				? Object.keys(config.EXTERNAL_TEXT_SPLITTER_HEADERS ?? {}).length > 0
+					? JSON.stringify(config.EXTERNAL_TEXT_SPLITTER_HEADERS, null, 2)
+					: ''
+				: config.EXTERNAL_TEXT_SPLITTER_HEADERS;
 
 		config.MINERU_FILE_EXTENSIONS = (config?.MINERU_FILE_EXTENSIONS ?? ['pdf']).join(', ');
 		config.CONTENT_EXTRACTION_SUPPORTED_MEDIA_MIME_TYPES =
@@ -922,6 +952,7 @@
 							<option value="token_transformers" disabled={$config?.features?.slim === true}>
 								{$i18n.t('Token')} ({$i18n.t('Transformers')})
 							</option>
+							<option value="external">{$i18n.t('External')}</option>
 						</SettingsSelect>
 					</AdminSettingRow>
 
@@ -940,16 +971,108 @@
 						</AdminSettingField>
 					{/if}
 
-					<AdminSettingRow
-						label={$i18n.t('settings.admin.documents.markdownHeaderTextSplitter.label')}
-						description={$i18n.t('settings.admin.documents.markdownHeaderTextSplitter.description')}
-						let:labelId
-					>
-						<Switch
-							bind:state={RAGConfig.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER}
-							ariaLabelledbyId={labelId}
-						/>
-					</AdminSettingRow>
+					{#if RAGConfig.TEXT_SPLITTER === 'external'}
+						<div class="grid grid-cols-1 gap-x-3 gap-y-2.5 sm:grid-cols-2">
+							<AdminSettingField
+								label={$i18n.t('settings.admin.documents.textSplitterUrl.label')}
+								description={$i18n.t('settings.admin.documents.textSplitterUrl.description')}
+							>
+								<input
+									class={inputClass}
+									placeholder={$i18n.t('Enter External Text Splitter URL')}
+									bind:value={RAGConfig.EXTERNAL_TEXT_SPLITTER_URL}
+								/>
+							</AdminSettingField>
+							<AdminSettingField
+								label={$i18n.t('settings.admin.documents.externalTextSplitterApiKey.label')}
+								description={$i18n.t(
+									'settings.admin.documents.externalTextSplitterApiKey.description'
+								)}
+							>
+								<SensitiveInput
+									variant="settings"
+									placeholder={$i18n.t('Enter External Text Splitter API Key')}
+									required={false}
+									bind:value={RAGConfig.EXTERNAL_TEXT_SPLITTER_API_KEY}
+								/>
+							</AdminSettingField>
+						</div>
+
+						<AdminSettingField
+							label={$i18n.t('settings.admin.documents.externalTextSplitterTimeout.label')}
+							description={$i18n.t(
+								'settings.admin.documents.externalTextSplitterTimeout.description'
+							)}
+						>
+							<input
+								class={inputClass}
+								type="number"
+								placeholder={$i18n.t('Enter Timeout')}
+								bind:value={RAGConfig.EXTERNAL_TEXT_SPLITTER_TIMEOUT}
+								autocomplete="off"
+								min="0"
+							/>
+						</AdminSettingField>
+
+						<AdminSettingField
+							label={$i18n.t('settings.admin.documents.externalTextSplitterHeaders.label')}
+							description={$i18n.t(
+								'settings.admin.documents.externalTextSplitterHeaders.description'
+							)}
+						>
+							<Tooltip
+								content={$i18n.t(
+									'Enter additional headers in JSON format (e.g. {"X-Custom-Header": "value"}'
+								)}
+							>
+								<Textarea
+									className={textareaClass}
+									bind:value={RAGConfig.EXTERNAL_TEXT_SPLITTER_HEADERS}
+									placeholder={$i18n.t('Enter additional headers in JSON format')}
+									required={false}
+								/>
+							</Tooltip>
+							<button
+								type="button"
+								class="mt-1 text-[0.6875rem] text-gray-400 transition-colors hover:text-gray-700 dark:text-gray-600 dark:hover:text-gray-300"
+								on:click={() =>
+									(showExternalTextSplitterHeadersHint = !showExternalTextSplitterHeadersHint)}
+							>
+								{$i18n.t('settings.admin.documents.headerVariables.label')}
+							</button>
+							{#if showExternalTextSplitterHeadersHint}
+								<div class="mt-1 text-[0.6875rem] leading-5 text-gray-500 dark:text-gray-400">
+									<div>{$i18n.t('No additional headers are sent unless configured.')}</div>
+									<div>
+										{$i18n.t('Example')}:
+										<code class="text-gray-700 dark:text-gray-300"
+											>{'{"X-OpenWebUI-File-Id": "{{FILE_ID}}"}'}</code
+										>
+									</div>
+									<div>
+										{$i18n.t('Available variables')}:
+										<code class="text-gray-700 dark:text-gray-300">{'{{FILE_ID}}'}</code>,
+										<code class="text-gray-700 dark:text-gray-300">{'{{FILE_NAME}}'}</code>
+									</div>
+								</div>
+							{/if}
+						</AdminSettingField>
+					{/if}
+
+					{#if RAGConfig.TEXT_SPLITTER !== 'external'}
+						<AdminSettingRow
+							label={$i18n.t('settings.admin.documents.markdownHeaderTextSplitter.label')}
+							description={$i18n.t(
+								'settings.admin.documents.markdownHeaderTextSplitter.description'
+							)}
+							let:labelId
+						>
+							<Switch
+								bind:state={RAGConfig.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER}
+								ariaLabelledbyId={labelId}
+							/>
+						</AdminSettingRow>
+					{/if}
 
 					<div class="grid grid-cols-1 gap-x-3 gap-y-2.5 sm:grid-cols-2">
 						<AdminSettingField
@@ -980,7 +1103,7 @@
 						</AdminSettingField>
 					</div>
 
-					{#if RAGConfig.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER}
+					{#if RAGConfig.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER && RAGConfig.TEXT_SPLITTER !== 'external'}
 						<AdminSettingField
 							label={$i18n.t('settings.admin.documents.chunkMinSizeTarget.label')}
 							description={$i18n.t('settings.admin.documents.chunkMinSizeTarget.description')}
