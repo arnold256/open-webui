@@ -1,7 +1,21 @@
 # Monthly upstream rebase — prompt
 
-Paste the block below into Claude Code from `D:\source\open-webui`.
+Paste the block below into Claude Code from `D:\source\open-webui`. It covers the
+whole cycle: sync upstream, rebase the patches, verify, and publish to both
+remotes. Publishing is what deploys — pushing `deploy/gpa` to `devops` triggers
+the Azure DevOps pipeline that builds the image into Harbor, and the platform
+pipeline builds the deployed image from that.
+
 Read [`FORK.md`](FORK.md) first if you want the background yourself.
+
+**The short version**, when you do not want to paste the whole thing:
+
+> Do the monthly rebase for this fork: follow REBASE_PROMPT.md end to end,
+> including the publish step, and stop where it says to stop.
+
+Claude still has to stop twice — once for the keep/drop decision on each patch,
+once if a conflict is anything other than the known mechanical one — so this is
+not unattended.
 
 ---
 
@@ -18,14 +32,22 @@ Ground rules:
   deploy/gpa is regenerated from them, not edited directly.
 - Upstream PRs target `dev`, so rebase onto origin/dev.
 - Create a dated safety branch before touching anything, and tell me its name.
-- Do not force-push anything. Do not touch backup/* branches.
+- The only force-push allowed is `--force-with-lease` onto our own PR branches
+  and deploy/gpa on the GitHub fork in step 8, which a rebase makes unavoidable.
+  Never force-push anything on `origin` (that is upstream) and never touch
+  backup/* branches at all.
 
 Do this:
 
-1. Fetch upstream. Report how far origin/dev moved and what it touched in the
-   files we patch: routers/retrieval.py, config.py, Documents.svelte,
-   retrieval/vector/main.py, retrieval/vector/dbs/pgvector.py,
+1. Fetch every remote — origin (upstream), open-webui-(GPA) (our GitHub fork),
+   devops (Azure DevOps, deploy/gpa only). Report how far origin/dev moved and
+   what it touched in the files we patch: routers/retrieval.py, config.py,
+   Documents.svelte, retrieval/vector/main.py, retrieval/vector/dbs/pgvector.py,
    retrieval/vector/async_client.py.
+
+   Fast-forward the GitHub fork's main to upstream while you are there, so the
+   fork does not sit visibly behind. If it will not fast-forward, leave it and
+   say so — never force it.
 
 2. BEFORE rebasing, check each patch against FORK.md's "Delete when" condition.
    Upstream has superseded our work twice already, so actually look:
@@ -69,6 +91,29 @@ Do this:
    verification actually ran and its result, and anything you could not verify.
    Flag any patch whose upstream case got weaker or stronger this month.
 
+8. Publish, once step 5 actually passed. Pushing is the release — there is no
+   separate deploy step and no docker build by hand.
+
+   - Push each surviving PR branch to `open-webui-(GPA)`. These were rebased, so
+     they need `--force-with-lease`; that is expected on PR branches and only
+     there.
+   - Push `deploy/gpa` to BOTH `open-webui-(GPA)` and `devops`. The `devops`
+     remote is Azure DevOps Server, and that push triggers the pipeline in
+     `azure-pipelines.yml`, which builds the image and pushes it to Harbor as
+     `registry.gpaeng.com.au/openwebui/open-webui-base:deploy-gpa` plus an
+     immutable build-number tag.
+   - Watch that build to completion and report its number and result. It is a
+     long one: full npm build plus the Python layer. Do not report success from
+     a queued build.
+   - Then trigger `openwebui-platform CI` (the pipeline in the openwebui-platform
+     repository) or tell me to. It builds the deployed image FROM the base you
+     just published, and its promote stage writes the new tag into the gpaadlk3s
+     overlay, which is what Fleet rolls out.
+
+   If a push to `devops` is refused, say so rather than working around it — that
+   remote is the deployment path and a silent fallback to the GHCR build means
+   the cluster quietly keeps running the old image.
+
 Never run `git stash pop` in this repo without checking `git stash list` first —
 there are pre-existing stashes and popping the wrong one has happened before.
 ```
@@ -77,14 +122,21 @@ there are pre-existing stashes and popping the wrong one has happened before.
 
 ## After the rebase
 
-Rebuild and push the image (see [`BUILD_AND_PUSH.md`](BUILD_AND_PUSH.md)):
+Step 8 above already published it. What is left is confirming the thing that
+actually runs changed:
 
 ```bash
-git checkout deploy/gpa && docker build -t ghcr.io/arnold256/open-webui:$(git rev-parse --short HEAD) .
+git push open-webui-\(GPA\) deploy/gpa
+git push devops deploy/gpa                 # this is the one that builds
 ```
 
-Then run the smoke checks listed at the end of `FORK.md` against the stack in
-`D:\source\Parser`.
+Then run the smoke checks listed at the end of `FORK.md` against the deployed
+stack, not just a local one. The image reports the commit it was built from —
+the pipeline passes `BUILD_HASH` — so the About panel is the quickest proof the
+rollout actually landed.
+
+[`BUILD_AND_PUSH.md`](BUILD_AND_PUSH.md) covers building by hand, which is now
+the fallback for when the agent is down rather than the normal path.
 
 ## When a PR merges upstream
 

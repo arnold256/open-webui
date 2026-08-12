@@ -9,6 +9,10 @@ If you are about to rebase this fork onto a newer upstream, read
 
 - **Upstream remote:** `origin` → `https://github.com/open-webui/open-webui`
 - **Fork remote:** `open-webui-(GPA)` → `https://github.com/arnold256/open-webui`
+- **Release remote:** `devops` → `https://devops.gpaeng.com.au/AI/OpenWebUI/_git/open-webui-fork`
+  — Azure DevOps Server. Carries `deploy/gpa` only, and pushing to it **is** the
+  release: it triggers `open-webui-fork CI`, which builds the image into Harbor.
+  The PR branches stay on GitHub, where the PRs live.
 - **PRs target `dev`.** Upstream auto-closes PRs opened against `main`.
 - **Deployed branch:** `deploy/gpa` — upstream `dev` plus the four patches, rebased linear.
 - **Consumed by:** `D:\source\Parser` (`docker-compose.yml`, service `open-webui`).
@@ -185,14 +189,35 @@ its per-extension and per-extractor splitter preferences resolve from
 `ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER` does **not** need setting — Patch 2 makes
 `external` imply it.
 
-## Build
+## Build and release
 
-`docker build .` uses whatever branch is checked out. Check out `deploy/gpa` first,
-and prefer tagging by commit so a running container traces back to a revision:
+**Pushing `deploy/gpa` to `devops` is the release.** That triggers
+`open-webui-fork CI` ([`azure-pipelines.yml`](azure-pipelines.yml)), which builds
+the image on the Linux agent and pushes it to Harbor under two tags: the build
+number, immutable, and `deploy-gpa`, which moves with the branch.
 
 ```bash
-git checkout deploy/gpa && docker build -t ghcr.io/arnold256/open-webui:$(git rev-parse --short HEAD) .
+git push open-webui-\(GPA\) deploy/gpa
+git push devops deploy/gpa
 ```
+
+That image is a **base**, not what the cluster runs. The chain:
+
+| Stage | Produces | Built by |
+| --- | --- | --- |
+| This repo, `deploy/gpa` | `openwebui/open-webui-base:deploy-gpa` | `open-webui-fork CI` |
+| `Parser` `services/openwebui/Dockerfile` layers pipeline functions on it | `openwebui/open-webui:<build>` | `openwebui-platform CI` |
+| `openwebui-platform` overlay records the tag | the running Deployment | Fleet |
+
+So a fork change reaches the cluster only after `openwebui-platform CI` also
+runs. It picks the base up through that Dockerfile's `OPENWEBUI_BASE` default and
+builds with `--pull`, so it takes whatever `deploy-gpa` points at then.
+
+Building by hand still works and is documented in
+[`BUILD_AND_PUSH.md`](BUILD_AND_PUSH.md) — it is the fallback for when the build
+agent is unavailable, not the normal path. It publishes to GHCR, which the build
+agent cannot read (private package), so an image released that way has to be
+retagged into Harbor before anything in the cluster can pull it.
 
 ## Smoke checks after any rebase
 
