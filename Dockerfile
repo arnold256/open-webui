@@ -29,33 +29,15 @@ ARG BUILD_HASH
 
 # Set Node.js options (heap limit Allocation failed - JavaScript heap out of memory)
 #
-# Uncommented for this fork. Node sizes its old-space heap from the memory it can
-# see, and on gpaadlbuildlnx01 that lands around 2 GB - `vite build` died at
-# 1.94 GB with "Mark-Compact ... allocation failure" (open-webui-fork CI build
-# 62). A workstation with 32 GB never hits it, which is why building by hand has
-# always worked.
+# Uncommented for this fork, at upstream's own suggested value. Node sizes its
+# default old-space heap from the memory it can see, and this build needs more
+# than that heuristic gives it: build 62 died at 1.94 GB with a Mark-Compact
+# allocation failure, and build 77 - on a 15 GB agent - died the same way at a
+# 2560 cap. The build wants roughly 3 GB of heap and the flag is how it gets it.
 #
-# 2560, and the number is squeezed rather than chosen. gpaadlbuildlnx01 has
-# 3903 MB total, ~3029 MB available and NO SWAP (build 69 prints this before
-# every build). Both 4096 and 3072 were SIGKILLed by the OOM killer - a heap that
-# size plus Node's own overhead does not fit, and with no swap there is nothing
-# to absorb the peak. Node's own default, ~2 GB, is too small: build 62 died on
-# the heap cap at 1.94 GB.
-#
-# So the build has to land between about 2 GB and 2.9 GB - and 2560 was killed
-# too, at 93 seconds instead of 82. Node's resident size runs well above its heap
-# cap, so every setting big enough to finish the build was also big enough to be
-# killed. Tuning this number is a dead end; it is left at 2560 as a ceiling, not
-# as the fix.
-#
-# The fix is below: VITE_SOURCEMAP=false. Source maps are what the memory was
-# being spent on, and a deployed container has no use for them. They also add
-# tens of megabytes to the image.
-#
-# None of this would be needed on a bigger agent. 8 GB, or swap, and both this
-# line and the next can go.
-ENV NODE_OPTIONS="--max-old-space-size=2560"
-ENV VITE_SOURCEMAP=false
+# A workstation with 32 GB never hits this, which is why building by hand has
+# always worked and CI did not.
+ENV NODE_OPTIONS="--max-old-space-size=4096"
 
 WORKDIR /app
 
