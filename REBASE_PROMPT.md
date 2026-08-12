@@ -65,10 +65,13 @@ Do this:
    Keep both sides. If a conflict is anything other than that, stop and show me.
 
 4. Rebuild deploy/gpa as a linear rebase of the four branches onto origin/dev,
-   then re-apply the "docs: fork manifest" commit carrying FORK.md and
-   REBASE_PROMPT.md on top. Verify with `git diff <old-deploy> deploy/gpa` — if
-   the rebase preserved everything, that diff is empty apart from intended
-   changes. Report it either way.
+   then re-apply the release-only commits on top — FORK.md's "Release-only
+   commits" table lists them, currently the fork manifest docs, azure-pipelines.yml
+   and the NODE_OPTIONS line in Dockerfile. Losing any of them breaks the release
+   path while every local build keeps working, so check they are present rather
+   than assuming the rebase carried them. Verify with
+   `git diff <old-deploy> deploy/gpa` — if the rebase preserved everything, that
+   diff is empty apart from intended changes. Report it either way.
 
 5. Verify. Do not report success without running these:
    - ruff format --check and ruff check --select=F on our changed .py files

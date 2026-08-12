@@ -30,6 +30,23 @@ If you are about to rebase this fork onto a newer upstream, read
 
 The PR branches are the source of truth. `deploy/gpa` is regenerated from them.
 
+### Release-only commits on `deploy/gpa`
+
+Three things live on `deploy/gpa` and on no PR branch, because they are about how
+this fork is *released* rather than what it changes in the product. A rebase
+must re-apply all three or the release path silently breaks:
+
+| Commit | Carries | Why it is not a PR |
+| --- | --- | --- |
+| `docs: fork manifest` | `FORK.md`, `REBASE_PROMPT.md` | Describes this fork; meaningless upstream. |
+| `ci: publish the fork image to Harbor` | `azure-pipelines.yml` | Our registry, our agent pool. |
+| `ci: raise the Node heap for the build agent` | one `ENV` line in `Dockerfile` | Upstream ships this line commented out, right above where we uncomment it. Worth an upstream conversation, not a patch we carry a PR branch for. |
+
+The `NODE_OPTIONS` line is the one that looks droppable and is not. Node sizes
+its heap from visible memory, so `vite build` completes on a 32 GB workstation
+and dies at ~1.94 GB on the build agent. Delete it and CI fails while every
+local build keeps working.
+
 ---
 
 ## Patch 1 — `fix: don't re-split already-chunked documents`
