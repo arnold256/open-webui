@@ -121,6 +121,32 @@ stages:
                 --label org.opencontainers.image.source=$(Build.Repository.Uri)
                 --label org.opencontainers.image.created=$(Build.QueuedTime)
 
+          # WHO KILLED IT, IN THE KERNEL'S OWN WORDS.
+          #
+          # A build killed for memory reports "exit code 1" and nothing else, and
+          # the memory reading taken before the build has twice disagreed with the
+          # memory that existed during it - build 81 started with 13.5 GB free and
+          # was still SIGKILLed. dmesg names the process, the limit it hit and the
+          # state of the machine at that moment.
+          #
+          # The agent is a container and usually cannot read the host ring buffer
+          # directly, so it falls back to borrowing it through the Docker socket
+          # it already has.
+          - bash: |
+              echo "=== memory now ==="
+              free -m || true
+              echo "=== kernel kill records ==="
+              if dmesg -T 2>/dev/null | tail -1 >/dev/null 2>&1; then
+                dmesg -T | grep -iE "out of memory|killed process|oom-kill|hv_balloon" | tail -25
+              else
+                echo "(reading the host ring buffer through docker)"
+                docker run --rm --privileged --pid=host alpine sh -c \
+                  'dmesg -T 2>/dev/null | grep -iE "out of memory|killed process|oom-kill|hv_balloon" | tail -25' \
+                  || echo "(could not read dmesg either way)"
+              fi
+            displayName: Why did that fail
+            condition: failed()
+
           # No smoke test here, deliberately. Open WebUI's own HEALTHCHECK needs
           # PostgreSQL to answer /health, and standing that up would make this an
           # integration test on the build agent. The image that gets deployed -
