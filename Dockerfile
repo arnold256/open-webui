@@ -28,7 +28,13 @@ FROM --platform=$BUILDPLATFORM node:22-alpine3.20 AS build
 ARG BUILD_HASH
 
 # Set Node.js options (heap limit Allocation failed - JavaScript heap out of memory)
-# ENV NODE_OPTIONS="--max-old-space-size=4096"
+#
+# Uncommented for this fork. Node sizes its old-space heap from the memory it can
+# see, and on gpaadlbuildlnx01 that lands around 2 GB - `vite build` died at
+# 1.94 GB with "Mark-Compact ... allocation failure" (open-webui-fork CI build
+# 62). A workstation with 32 GB never hits it, which is why building by hand has
+# always worked.
+ENV NODE_OPTIONS="--max-old-space-size=4096"
 
 WORKDIR /app
 
