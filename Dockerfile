@@ -34,7 +34,12 @@ ARG BUILD_HASH
 # 1.94 GB with "Mark-Compact ... allocation failure" (open-webui-fork CI build
 # 62). A workstation with 32 GB never hits it, which is why building by hand has
 # always worked.
-ENV NODE_OPTIONS="--max-old-space-size=4096"
+#
+# 3072 rather than upstream's suggested 4096, because 4096 does not fit on that
+# agent: build 66 was SIGKILLed by the OOM killer instead of failing on the heap
+# cap. The two failures bracket the usable range - below ~2 GB V8 gives up, above
+# what the machine has the kernel does. Raise it with the machine, not on its own.
+ENV NODE_OPTIONS="--max-old-space-size=3072"
 
 WORKDIR /app
 
