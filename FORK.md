@@ -40,7 +40,7 @@ must re-apply all three or the release path silently breaks:
 | --- | --- | --- |
 | `docs: fork manifest` | `FORK.md`, `REBASE_PROMPT.md` | Describes this fork; meaningless upstream. |
 | `ci: publish the fork image to Harbor` | `azure-pipelines.yml` | Our registry, our agent pool. |
-| `ci: raise the Node heap for the build agent` | one `ENV` line in `Dockerfile` | Upstream ships this line commented out, right above where we uncomment it. Worth an upstream conversation, not a patch we carry a PR branch for. |
+| `ci: raise the Node heap for the build agent` | two `ENV` lines in `Dockerfile`, one line in `vite.config.ts` | Upstream ships the `NODE_OPTIONS` line commented out, right above where we uncomment it. The `sourcemap` line is opt-out and defaults to today's behaviour, so it is a reasonable upstream PR whenever someone has the appetite. |
 
 The `NODE_OPTIONS` line is the one that looks droppable and is not. Node sizes
 its heap from visible memory, so `vite build` completes on a 32 GB workstation
