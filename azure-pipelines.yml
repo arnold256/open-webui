@@ -30,7 +30,15 @@ trigger:
       # linear. See FORK.md. The PR branches are deliberately not built - they
       # exist to be sent upstream, not to be released here.
       - deploy/gpa
+  paths:
+    exclude:
+      # This build is a full npm ci, svelte build and Python layer - the better
+      # part of an hour on this agent. Prose cannot change the image, and the
+      # rebase procedure touches FORK.md and REBASE_PROMPT.md every single month.
+      - '**/*.md'
+      - .github/**
 
+# Upstream's PR branches are sent to github.com/open-webui, not built here.
 pr: none
 
 variables:
