@@ -78,6 +78,19 @@ stages:
             # the history has to be there for git rev-parse to answer.
             fetchDepth: 1
 
+          # Printed every run because this build's failure mode is memory, and
+          # the failure it produces names something else. Build 62 read as a
+          # Node problem and build 66 as a plain "exit code 1"; both were the
+          # size of this machine. Four lines of output make the next one
+          # diagnosable from the log alone.
+          - bash: |
+              echo "memory:"; free -m || true
+              echo "cpus: $(nproc || echo '?')"
+              echo "disk:"; df -h /var/lib/docker / 2>/dev/null | tail -2 || true
+              echo "NODE_OPTIONS baked into the frontend stage: $(grep -m1 max-old-space-size Dockerfile || echo 'not set')"
+            displayName: Report agent resources
+            continueOnError: true
+
           - task: Docker@2
             displayName: Sign in to Harbor
             inputs:
