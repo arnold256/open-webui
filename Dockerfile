@@ -42,11 +42,20 @@ ARG BUILD_HASH
 # to absorb the peak. Node's own default, ~2 GB, is too small: build 62 died on
 # the heap cap at 1.94 GB.
 #
-# So the build has to land between about 2 GB and 2.9 GB, which is not a margin
-# worth defending. THE FIX IS MEMORY ON THAT AGENT - 8 GB, or swap so a larger
-# heap can spill. Upstream suggests 4096 for a reason; every CI runner that
-# builds this has more than 4 GB.
+# So the build has to land between about 2 GB and 2.9 GB - and 2560 was killed
+# too, at 93 seconds instead of 82. Node's resident size runs well above its heap
+# cap, so every setting big enough to finish the build was also big enough to be
+# killed. Tuning this number is a dead end; it is left at 2560 as a ceiling, not
+# as the fix.
+#
+# The fix is below: VITE_SOURCEMAP=false. Source maps are what the memory was
+# being spent on, and a deployed container has no use for them. They also add
+# tens of megabytes to the image.
+#
+# None of this would be needed on a bigger agent. 8 GB, or swap, and both this
+# line and the next can go.
 ENV NODE_OPTIONS="--max-old-space-size=2560"
+ENV VITE_SOURCEMAP=false
 
 WORKDIR /app
 

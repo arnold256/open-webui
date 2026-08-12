@@ -21,7 +21,15 @@ export default defineConfig({
 		APP_BUILD_HASH: JSON.stringify(process.env.APP_BUILD_HASH || 'dev-build')
 	},
 	build: {
-		sourcemap: true
+		// Source maps are the largest single memory consumer in this build:
+		// rollup holds the mapping structures for every module alongside the
+		// modules themselves. On a build agent with 3.9 GB and no swap that is
+		// the difference between finishing and being killed - see the Dockerfile,
+		// where the image build sets VITE_SOURCEMAP=false.
+		//
+		// Unset, the behaviour is exactly as before. Only a build that opts out
+		// loses them, and a deployed container has no use for them.
+		sourcemap: process.env.VITE_SOURCEMAP !== 'false'
 	},
 	worker: {
 		format: 'es'
