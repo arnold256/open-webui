@@ -35,11 +35,18 @@ ARG BUILD_HASH
 # 62). A workstation with 32 GB never hits it, which is why building by hand has
 # always worked.
 #
-# 3072 rather than upstream's suggested 4096, because 4096 does not fit on that
-# agent: build 66 was SIGKILLed by the OOM killer instead of failing on the heap
-# cap. The two failures bracket the usable range - below ~2 GB V8 gives up, above
-# what the machine has the kernel does. Raise it with the machine, not on its own.
-ENV NODE_OPTIONS="--max-old-space-size=3072"
+# 2560, and the number is squeezed rather than chosen. gpaadlbuildlnx01 has
+# 3903 MB total, ~3029 MB available and NO SWAP (build 69 prints this before
+# every build). Both 4096 and 3072 were SIGKILLed by the OOM killer - a heap that
+# size plus Node's own overhead does not fit, and with no swap there is nothing
+# to absorb the peak. Node's own default, ~2 GB, is too small: build 62 died on
+# the heap cap at 1.94 GB.
+#
+# So the build has to land between about 2 GB and 2.9 GB, which is not a margin
+# worth defending. THE FIX IS MEMORY ON THAT AGENT - 8 GB, or swap so a larger
+# heap can spill. Upstream suggests 4096 for a reason; every CI runner that
+# builds this has more than 4 GB.
+ENV NODE_OPTIONS="--max-old-space-size=2560"
 
 WORKDIR /app
 
