@@ -1,0 +1,125 @@
+# Build the forked Open WebUI image and push it to Harbor.
+#
+# WHY THIS EXISTS
+#
+# This image is the BASE that openwebui-platform's pipeline builds on top of:
+# Parser's services/openwebui/Dockerfile does FROM ${OPENWEBUI_BASE} and layers
+# the pipeline functions over it. That base used to be a hand-built push to
+# ghcr.io/arnold256/open-webui:latest, which meant two things - the fork was
+# only ever released from a workstation, and the ADO build agent could not pull
+# it at all (private GitHub package, anonymous 401, which is precisely how
+# openwebui-platform build 61 failed).
+#
+# Publishing to Harbor solves both. Harbor is inside the network the cluster and
+# the agent already share, and it is the registry every other image here comes
+# from.
+#
+# WHAT CONSUMES THE OUTPUT
+#
+#   registry.gpaeng.com.au/openwebui/open-webui-base:deploy-gpa
+#     -> Parser  services/openwebui/Dockerfile  (ARG OPENWEBUI_BASE default)
+#     -> k3cluster  bootstrap/install-openwebui.ps1  (only when -SkipForkBuild)
+#
+# Note this is NOT the image the cluster runs. openwebui-platform builds
+# openwebui/open-webui from this base and deploys that.
+
+trigger:
+  branches:
+    include:
+      # The deployed branch: upstream dev plus this fork's patches, rebased
+      # linear. See FORK.md. The PR branches are deliberately not built - they
+      # exist to be sent upstream, not to be released here.
+      - deploy/gpa
+
+pr: none
+
+variables:
+  - name: registry
+    value: registry.gpaeng.com.au
+  - name: registryProject
+    value: openwebui
+  # -base, because openwebui/open-webui is the FINAL image that openwebui-platform
+  # builds from this one. Pushing both to the same repository would have each
+  # pipeline overwrite the other's tags with a different image.
+  - name: repository
+    value: open-webui-base
+  # The branch-tracking tag consumers reference by name. The build-number tag
+  # beside it is immutable and is what you pin to when you need to know exactly
+  # what shipped.
+  - name: movingTag
+    value: deploy-gpa
+
+name: 1.0.$(Date:yyyyMMdd).$(Rev:r)
+
+stages:
+  - stage: build
+    displayName: Build and push the fork image
+    jobs:
+      - job: image
+        displayName: open-webui-base
+        # gpaadlbuildlnx01, the only online Linux agent and the only one that can
+        # build Linux container images. This build is heavy - a full npm ci and
+        # svelte build, then the Python layer with torch - so it gets a long
+        # timeout rather than the 60 minute default.
+        pool: Linux
+        timeoutInMinutes: 180
+        steps:
+          - checkout: self
+            clean: true
+            # The frontend build stamps the UI with the commit it came from, so
+            # the history has to be there for git rev-parse to answer.
+            fetchDepth: 1
+
+          - task: Docker@2
+            displayName: Sign in to Harbor
+            inputs:
+              command: login
+              containerRegistry: harbor-registry
+
+          - task: Docker@2
+            displayName: Build open-webui-base
+            inputs:
+              command: build
+              repository: $(registryProject)/$(repository)
+              dockerfile: $(Build.SourcesDirectory)/Dockerfile
+              buildContext: $(Build.SourcesDirectory)
+              containerRegistry: harbor-registry
+              tags: |
+                $(Build.BuildNumber)
+                $(movingTag)
+              # BUILD_HASH is what the UI shows as its version. Left unset it
+              # bakes in the literal 'dev-build', which makes a deployed image
+              # impossible to trace back to a commit.
+              #
+              # --pull so a base image that moved upstream is actually fetched
+              # rather than served from whatever the agent cached weeks ago.
+              arguments: >-
+                --pull
+                --build-arg BUILD_HASH=$(Build.SourceVersion)
+                --label org.opencontainers.image.revision=$(Build.SourceVersion)
+                --label org.opencontainers.image.source=$(Build.Repository.Uri)
+                --label org.opencontainers.image.created=$(Build.QueuedTime)
+
+          # No smoke test here, deliberately. Open WebUI's own HEALTHCHECK needs
+          # PostgreSQL to answer /health, and standing that up would make this an
+          # integration test on the build agent. The image that gets deployed -
+          # openwebui/open-webui, built from this one - is not smoke tested for
+          # the same reason; the parser, which has no such dependency, is.
+          - task: Docker@2
+            displayName: Push open-webui-base
+            inputs:
+              command: push
+              repository: $(registryProject)/$(repository)
+              containerRegistry: harbor-registry
+              tags: |
+                $(Build.BuildNumber)
+                $(movingTag)
+
+          - bash: |
+              echo "Pushed:"
+              echo "  $(registry)/$(registryProject)/$(repository):$(Build.BuildNumber)"
+              echo "  $(registry)/$(registryProject)/$(repository):$(movingTag)"
+              echo ""
+              echo "openwebui-platform's next run picks this up through"
+              echo "services/openwebui/Dockerfile's OPENWEBUI_BASE default."
+            displayName: Report what was published
