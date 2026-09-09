@@ -54,13 +54,13 @@ its heap from visible memory, so `vite build` completes on a 32 GB workstation
 and dies at ~1.94 GB on the build agent. Delete it and CI fails while every
 local build keeps working.
 
-**0.11.3 watch item:** that stopped being true this rebase. On a 32 GB
+**Raised to 8192 on the 0.11.3 rebase.** The build outgrew 4096. On a 32 GB
 workstation with Node 24 and no `NODE_OPTIONS`, `npm run build` died with
-`Ineffective mark-compacts near heap limit` at ~3.7 GB; it only passed at
-`--max-old-space-size=8192`. The Dockerfile still pins 4096, so the CI build is
-now close to its ceiling rather than comfortably under it. If `open-webui-fork CI`
-starts failing with a heap OOM, raise that number first — the build genuinely got
-bigger, it is not a regression in our patches.
+`Ineffective mark-compacts near heap limit` at ~3.7 GB, and CI build 100 died the
+same way at 3.92 GB against the 4096 cap. 8192 passes in both places. The build
+agent has 15 GB and no swap, so the cap is a ceiling rather than a reservation and
+leaves plenty of margin. Note the old claim that "a workstation with 32 GB never
+hits this" is no longer true — local builds now need the flag too.
 
 ---
 
