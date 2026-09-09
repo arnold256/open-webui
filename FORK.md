@@ -32,20 +32,35 @@ The PR branches are the source of truth. `deploy/gpa` is regenerated from them.
 
 ### Release-only commits on `deploy/gpa`
 
-Three things live on `deploy/gpa` and on no PR branch, because they are about how
-this fork is *released* rather than what it changes in the product. A rebase
-must re-apply all three or the release path silently breaks:
+Four kinds of change live on `deploy/gpa` and on no PR branch, because they are
+about how this fork is _released_ rather than what it changes in the product.
+They currently span 11 commits — the CI ones accumulated while the build agent
+was being tuned. A rebase must re-apply all of them or the release path silently
+breaks, so check them explicitly rather than trusting the rebase to carry them:
 
-| Commit | Carries | Why it is not a PR |
-| --- | --- | --- |
-| `docs: fork manifest` | `FORK.md`, `REBASE_PROMPT.md` | Describes this fork; meaningless upstream. |
-| `ci: publish the fork image to Harbor` | `azure-pipelines.yml` | Our registry, our agent pool. |
-| `ci: raise the Node heap for the build agent` | one `ENV` line in `Dockerfile` | Upstream ships this line commented out, right above where we uncomment it, at the same value. Worth an upstream conversation, not a patch we carry a PR branch for. |
+| Commit                                        | Carries                               | Why it is not a PR                                                                                                                                                  |
+| --------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs: fork manifest`                         | `FORK.md`, `REBASE_PROMPT.md`         | Describes this fork; meaningless upstream.                                                                                                                          |
+| `ci: publish the fork image to Harbor`        | `azure-pipelines.yml`                 | Our registry, our agent pool.                                                                                                                                       |
+| `ci: raise the Node heap for the build agent` | one `ENV` line in `Dockerfile`        | Upstream ships this line commented out, right above where we uncomment it, at the same value. Worth an upstream conversation, not a patch we carry a PR branch for. |
+| `deps: move the Playwright client to 1.61.0`  | one pin in `backend/requirements.txt` | The client must match the Playwright _server_ it reaches over `PLAYWRIGHT_WS_URL`; the pin tracks our bundle, not upstream's.                                       |
+
+Note `vite.config.ts` nets to zero: the source-map commit and its revert cancel
+out. That is expected — do not "restore" a change there on the strength of the
+commit titles alone.
 
 The `NODE_OPTIONS` line is the one that looks droppable and is not. Node sizes
 its heap from visible memory, so `vite build` completes on a 32 GB workstation
 and dies at ~1.94 GB on the build agent. Delete it and CI fails while every
 local build keeps working.
+
+**0.11.3 watch item:** that stopped being true this rebase. On a 32 GB
+workstation with Node 24 and no `NODE_OPTIONS`, `npm run build` died with
+`Ineffective mark-compacts near heap limit` at ~3.7 GB; it only passed at
+`--max-old-space-size=8192`. The Dockerfile still pins 4096, so the CI build is
+now close to its ceiling rather than comfortably under it. If `open-webui-fork CI`
+starts failing with a heap OOM, raise that number first — the build genuinely got
+bigger, it is not a regression in our patches.
 
 ---
 
@@ -146,7 +161,7 @@ enriched fields (`title`, `summary`, `document_type`, `rev`, `keywords`,
 
 ## Patch 4 — `perf: reuse existing embeddings when linking a file to a knowledge collection`
 
-**Branch:** `perf/reuse-embeddings` (stacks on `fix/no-double-split`) · **Size:** 143 lines across 4 files
+**Branch:** `perf/reuse-embeddings` (stacks on `fix/no-double-split`) · **Size:** 137 lines across 4 files
 
 Every knowledge-base upload embeds the same text twice — once into `file-{id}`,
 once into the knowledge collection. With hosted embeddings (this deployment uses
@@ -162,6 +177,11 @@ re-embed exactly as before — which is why Patch 1 must land first.
 - Skipped under `PGVECTOR_PGCRYPTO`, where the query path selects decrypted
   columns and never loads the rows the vectors hang off.
 - pgvector returns numpy scalars, hence the explicit `float()` conversion.
+- **The helper calls the vector client through `get_vector_db_client()`, not the
+  `VECTOR_DB_CLIENT` module global.** Upstream replaced the eager singleton with a
+  lazy factory (for slim mode) in the 0.11.3 window. Importing the global still
+  "works" and yields `None` under slim, failing at insert time rather than at
+  import — so this is easy to reintroduce silently on a future rebase.
 
 - **Upstream status:** not submitted. Link
   [Discussion #8240](https://github.com/open-webui/open-webui/discussions/8240) —
@@ -220,11 +240,11 @@ git push devops deploy/gpa
 
 That image is a **base**, not what the cluster runs. The chain:
 
-| Stage | Produces | Built by |
-| --- | --- | --- |
-| This repo, `deploy/gpa` | `openwebui/open-webui-base:deploy-gpa` | `open-webui-fork CI` |
-| `Parser` `services/openwebui/Dockerfile` layers pipeline functions on it | `openwebui/open-webui:<build>` | `openwebui-platform CI` |
-| `openwebui-platform` overlay records the tag | the running Deployment | Fleet |
+| Stage                                                                    | Produces                               | Built by                |
+| ------------------------------------------------------------------------ | -------------------------------------- | ----------------------- |
+| This repo, `deploy/gpa`                                                  | `openwebui/open-webui-base:deploy-gpa` | `open-webui-fork CI`    |
+| `Parser` `services/openwebui/Dockerfile` layers pipeline functions on it | `openwebui/open-webui:<build>`         | `openwebui-platform CI` |
+| `openwebui-platform` overlay records the tag                             | the running Deployment                 | Fleet                   |
 
 So a fork change reaches the cluster only after `openwebui-platform CI` also
 runs. It picks the base up through that Dockerfile's `OPENWEBUI_BASE` default and
@@ -249,18 +269,24 @@ retagged into Harbor before anything in the cluster can pull it.
 
 ## Known-red upstream CI (not caused by this fork)
 
-As of upstream `dev` @ `2dadc5435`, the frontend workflow runs `npm run format`
-and `npm run i18n:parse` then `git diff --exit-code`, and **both already dirty the
-tree on a pristine checkout**:
+As of upstream `dev` @ `3808eace6` (0.11.3), the frontend workflow runs
+`npm run format` and `npm run i18n:parse` then `git diff --exit-code`, and **both
+already dirty the tree on a pristine checkout**:
 
-- `npm run format` reformats `AddTerminalServerModal.svelte`, `ChatControls.svelte`,
-  `FileNav.svelte`, `FileNavToolbar.svelte`.
-- `npm run i18n:parse` adds `Orchestrator`, `Per automation`, `Per chat`,
-  `Start the chat to use this terminal.`, `Terminal Contexts`, `Upload failed`,
-  `Waiting for upload` and removes one unreferenced key.
+- `npm run format` reformats `Chat.svelte`. (The previous four —
+  `AddTerminalServerModal.svelte`, `ChatControls.svelte`, `FileNav.svelte`,
+  `FileNavToolbar.svelte` — have since been fixed upstream.)
+- `npm run i18n:parse` adds 15 keys, none of them ours: the `{{count}} added lines`
+  / `{{count}} removed lines` plural pairs, `Diff settings`, `Extracted text lines`,
+  `Extracting text and comparing…`, `File differences`,
+  `Format Markdown as you type and paste. …`, `Formatting`, `Hide whitespace`,
+  `No text differences`, `Select {{name}}`, `Swap`, `Upload Folder`. It removes
+  nothing.
 
-Our patches are clean under both. Expect that CI failure on any PR and say so in
-the PR body. Do **not** absorb that churn into a feature commit — it breaks the
+Our patches are clean under both — verified this rebase: all 8 of our i18n keys
+survive `i18n:parse` (so none is dead), and `ruff check --select=F` reports exactly
+the same count on our files as on pristine upstream. Expect that CI failure on any
+PR and say so in the PR body. Do **not** absorb that churn into a feature commit — it breaks the
 atomicity the PR template requires.
 
 Local tooling note: `.npmrc` sets `engine-strict=true` and pins Node `<=22.x.x`.

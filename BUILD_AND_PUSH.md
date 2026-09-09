@@ -1,9 +1,10 @@
 # Build & Push `open-webui` to GHCR
 
-> **This is the fallback, not the release path.** Releasing is `git push devops
-> deploy/gpa`, which triggers `open-webui-fork CI` and publishes to Harbor —
-> see [`FORK.md`](FORK.md) § Build and release. Use the steps below when the
-> build agent is unavailable, or when you want a local image to test against.
+> **This is the fallback, not the release path.** Releasing is
+> `git push devops deploy/gpa`, which triggers `open-webui-fork CI` and
+> publishes to Harbor — see [`FORK.md`](FORK.md) § Build and release. Use the
+> steps below when the build agent is unavailable, or when you want a local
+> image to test against.
 >
 > An image published to GHCR **cannot be deployed as-is**. The package is
 > private, and the Azure DevOps build agent has no GHCR credential, so the
