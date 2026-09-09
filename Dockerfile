@@ -32,15 +32,18 @@ ARG GID
 
 # Set Node.js options (heap limit Allocation failed - JavaScript heap out of memory)
 #
-# Uncommented for this fork, at upstream's own suggested value. Node sizes its
-# default old-space heap from the memory it can see, and this build needs more
-# than that heuristic gives it: build 62 died at 1.94 GB with a Mark-Compact
-# allocation failure, and build 77 - on a 15 GB agent - died the same way at a
-# 2560 cap. The build wants roughly 3 GB of heap and the flag is how it gets it.
+# Uncommented for this fork. Node sizes its default old-space heap from the
+# memory it can see, and this build needs more than that heuristic gives it:
+# build 62 died at 1.94 GB with a Mark-Compact allocation failure, and build 77
+# - on a 15 GB agent - died the same way at a 2560 cap.
 #
-# A workstation with 32 GB never hits this, which is why building by hand has
-# always worked and CI did not.
-ENV NODE_OPTIONS="--max-old-space-size=4096"
+# Raised from upstream's suggested 4096 to 8192 on the 0.11.3 rebase. The build
+# outgrew 4096: build 100 died at 3.92 GB against that cap, and the same build
+# now OOMs at ~3.7 GB on a 32 GB workstation with no flag at all - so the old
+# note that "a workstation never hits this" no longer holds. 8192 passes in both
+# places. The agent has 15 GB and no swap, so this stays well clear of the OOM
+# killer; it is a ceiling, not a reservation.
+ENV NODE_OPTIONS="--max-old-space-size=8192"
 
 WORKDIR /app
 
