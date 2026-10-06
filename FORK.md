@@ -34,7 +34,7 @@ The PR branches are the source of truth. `deploy/gpa` is regenerated from them.
 
 Four kinds of change live on `deploy/gpa` and on no PR branch, because they are
 about how this fork is _released_ rather than what it changes in the product.
-They currently span 11 commits — the CI ones accumulated while the build agent
+They currently span 14 commits — the CI ones accumulated while the build agent
 was being tuned. A rebase must re-apply all of them or the release path silently
 breaks, so check them explicitly rather than trusting the rebase to carry them:
 
@@ -62,6 +62,12 @@ agent has 15 GB and no swap, so the cap is a ceiling rather than a reservation a
 leaves plenty of margin. Note the old claim that "a workstation with 32 GB never
 hits this" is no longer true — local builds now need the flag too.
 
+**`BUILD_CHANNEL` is deliberately not passed.** 0.11.4 added a `BUILD_CHANNEL`
+build arg (`main` / `dev` / `unknown`, default `unknown`). It only decides whether
+the "new version available" check and banner appear, and only on `main`. Our
+pipeline passes `BUILD_HASH` and leaves the channel `unknown`, which keeps
+upstream's release nag out of a fork that cannot take upstream releases directly.
+
 ---
 
 ## Patch 1 — `fix: don't re-split already-chunked documents`
@@ -85,7 +91,7 @@ caller has ever passed it (`git log -S "split=False"` → empty).
 
 ## Patch 2 — `feat: add external text splitter option`
 
-**Branch:** `feat/external-text-splitter` · **Size:** 364 lines + 9 i18n keys × 63 locales
+**Branch:** `feat/external-text-splitter` · **Size:** 380 lines + 12 i18n keys × 64 locales
 
 Adds `TEXT_SPLITTER == 'external'`, delegating chunking to an HTTP service.
 Mirrors the external _document loader_ in naming and plumbing:
@@ -119,6 +125,16 @@ Design decisions a future maintainer will otherwise re-litigate:
 - **`EXTERNAL_TEXT_SPLITTER_TIMEOUT` is typed `Union[int, str | None]`**, matching
   `FILE_MAX_SIZE`. Pydantic v2 rejects `int` for a `str | None` field and the
   admin UI's number input sends a number.
+- **Field labels and descriptions use semantic i18n keys** under
+  `settings.admin.documents.*` (`textSplitterUrl`, `externalTextSplitterApiKey`,
+  `externalTextSplitterTimeout`, `externalTextSplitterHeaders`, plus upstream's own
+  `headerVariables`). Upstream moved the whole Documents page to that scheme in
+  0.11.4; placeholders and toasts stay English-text keys, as upstream's do. en-US
+  carries the English text for the semantic keys and every other locale leaves
+  them empty, which falls back to en-US (`returnEmptyString: false`). On a rebase
+  that conflicts in the locale files, take upstream's files whole and run
+  `npm run i18n:parse` to re-add ours. Then restore the eight en-US values, which
+  the parser leaves empty.
 
 Adding a config option touches 7 places: `config.py` declaration, `DEFAULT_CONFIG`,
 `RETRIEVAL_CONFIG_KEYS`, `get_rag_config`, `ConfigForm`, `update_rag_config`, and
@@ -150,7 +166,11 @@ enriched fields (`title`, `summary`, `document_type`, `rev`, `keywords`,
 `headings`, `process_area`, …) reach the model.
 
 - **Upstream status:** not submitted; the weakest case of the four, since it serves
-  a specific integration pattern. Open a Discussion before a PR.
+  a specific integration pattern. Open a Discussion before a PR. Weaker again
+  since 0.11.4: upstream's `RAG_SOURCE_METADATA_KEYS` (7fa705f3b) lets chosen
+  chunk metadata keys reach the model in retrieved sources. That does not cover the
+  file-level tools `enhanced_rag.py` serves, so the patch stays, but it strengthens
+  the "read `vmetadata` instead" alternative below.
 - **Delete when:** merged upstream, **or** `enhanced_rag.py` is changed to read the
   same fields off pgvector `vmetadata` instead. They are already there — chunk
   metadata is built as `{**doc.metadata, ...}` with no key filtering, and
@@ -161,7 +181,7 @@ enriched fields (`title`, `summary`, `document_type`, `rev`, `keywords`,
 
 ## Patch 4 — `perf: reuse existing embeddings when linking a file to a knowledge collection`
 
-**Branch:** `perf/reuse-embeddings` (stacks on `fix/no-double-split`) · **Size:** 137 lines across 4 files
+**Branch:** `perf/reuse-embeddings` (stacks on `fix/no-double-split`) · **Size:** 147 lines across 4 files
 
 Every knowledge-base upload embeds the same text twice — once into `file-{id}`,
 once into the knowledge collection. With hosted embeddings (this deployment uses
@@ -174,14 +194,29 @@ re-embed exactly as before — which is why Patch 1 must land first.
 
 - Reuse is refused unless every chunk's recorded `embedding_config` matches the
   currently configured engine and model, so vectors survive a model change safely.
+- **pgvector stores `embedding_config` as a string.** Its insert runs metadata
+  through `process_metadata`, which keeps a dict value as its `str()`. So a stored
+  value reads back as `"{'engine': '', 'model': '…'}"` and has to go through
+  `ast.literal_eval` before the comparison. Until the 0.11.4 rebase the code
+  compared that string with a dict, so reuse silently never happened and every
+  upload was still embedded twice.
 - Skipped under `PGVECTOR_PGCRYPTO`, where the query path selects decrypted
   columns and never loads the rows the vectors hang off.
 - pgvector returns numpy scalars, hence the explicit `float()` conversion.
+- An empty read rolls back before returning `None`, like upstream's `query` and
+  `get` since 3d2954871. Without it the read keeps its pooled connection, and the
+  pool eventually runs dry (`QueuePool limit … reached`).
 - **The helper calls the vector client through `get_vector_db_client()`, not the
   `VECTOR_DB_CLIENT` module global.** Upstream replaced the eager singleton with a
   lazy factory (for slim mode) in the 0.11.3 window. Importing the global still
   "works" and yields `None` under slim, failing at insert time rather than at
   import — so this is easy to reintroduce silently on a future rebase.
+- **The same trap applies to `AsyncVectorDBClient`.** Its `_sync` attribute is
+  `None` unless a client is passed in, and `ASYNC_VECTOR_DB_CLIENT` is built with
+  none, so always go through the `sync` property. The 0.11.3 rebase missed this
+  in `query_with_vectors`. From that release until the 0.11.4 rebase, every
+  add-to-knowledge request failed with this error:
+  `'NoneType' object has no attribute 'query_with_vectors'`
 
 - **Upstream status:** not submitted. Link
   [Discussion #8240](https://github.com/open-webui/open-webui/discussions/8240) —
@@ -269,24 +304,22 @@ retagged into Harbor before anything in the cluster can pull it.
 
 ## Known-red upstream CI (not caused by this fork)
 
-As of upstream `dev` @ `3808eace6` (0.11.3), the frontend workflow runs
-`npm run format` and `npm run i18n:parse` then `git diff --exit-code`, and **both
-already dirty the tree on a pristine checkout**:
+As of upstream `dev` @ `30f3f6a8f` (0.11.4), the frontend workflow runs
+`npm run format` and `npm run i18n:parse` then `git diff --exit-code`:
 
-- `npm run format` reformats `Chat.svelte`. (The previous four —
-  `AddTerminalServerModal.svelte`, `ChatControls.svelte`, `FileNav.svelte`,
-  `FileNavToolbar.svelte` — have since been fixed upstream.)
-- `npm run i18n:parse` adds 15 keys, none of them ours: the `{{count}} added lines`
-  / `{{count}} removed lines` plural pairs, `Diff settings`, `Extracted text lines`,
-  `Extracting text and comparing…`, `File differences`,
-  `Format Markdown as you type and paste. …`, `Formatting`, `Hide whitespace`,
-  `No text differences`, `Select {{name}}`, `Swap`, `Upload Folder`. It removes
-  nothing.
+- `npm run format` removes one line from `admin/Settings/General.svelte`, a
+  file we do not touch. (`Chat.svelte`, the 0.11.3 offender, is fixed upstream.)
+- `npm run i18n:parse` is **clean** on a pristine checkout this time. The 15
+  drift keys recorded at 0.11.3 have been absorbed upstream.
+- `npx vitest run` exits 1 with "No test files found". Upstream `dev` currently
+  ships no frontend test files, so there is nothing to run. That is not a failure
+  of ours.
 
-Our patches are clean under both — verified this rebase: all 8 of our i18n keys
-survive `i18n:parse` (so none is dead), and `ruff check --select=F` reports exactly
-the same count on our files as on pristine upstream. Expect that CI failure on any
-PR and say so in the PR body. Do **not** absorb that churn into a feature commit — it breaks the
+Our patches are clean under both — verified this rebase: `i18n:parse` adds
+exactly our 12 keys and nothing else (so none is dead), a second run is a no-op,
+and `ruff check --select=F` reports exactly the same count (25) on our files as on
+pristine upstream. Expect the `General.svelte` format failure on any PR and say so
+in the PR body. Do **not** absorb that churn into a feature commit — it breaks the
 atomicity the PR template requires.
 
 Local tooling note: `.npmrc` sets `engine-strict=true` and pins Node `<=22.x.x`.
