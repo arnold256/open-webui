@@ -33,9 +33,10 @@ Ground rules:
 - Upstream PRs target `dev`, so rebase onto origin/dev.
 - Create a dated safety branch before touching anything, and tell me its name.
 - The only force-push allowed is `--force-with-lease` onto our own PR branches
-  and deploy/gpa on the GitHub fork in step 8, which a rebase makes unavoidable.
-  Never force-push anything on `origin` (that is upstream) and never touch
-  backup/* branches at all.
+  and deploy/gpa on the GitHub fork, and onto deploy/gpa on `devops`, in step 8.
+  A rebase makes those unavoidable. Lease against the exact old tip
+  (`--force-with-lease=deploy/gpa:<sha>`). Never force-push anything on `origin`
+  (that is upstream) and never touch backup/* branches at all.
 
 Do this:
 
@@ -100,7 +101,10 @@ Do this:
    - Push each surviving PR branch to `open-webui-(GPA)`. These were rebased, so
      they need `--force-with-lease`; that is expected on PR branches and only
      there.
-   - Push `deploy/gpa` to BOTH `open-webui-(GPA)` and `devops`. The `devops`
+   - Push `deploy/gpa` to BOTH `open-webui-(GPA)` and `devops`, each with
+     `--force-with-lease` against its old tip, since the rebase rewrote it. A
+     plain push to `devops` is refused as non-fast-forward. That refusal is
+     expected, and is not the kind of refusal to stop on. The `devops`
      remote is Azure DevOps Server, and that push triggers the pipeline in
      `azure-pipelines.yml`, which builds the image and pushes it to Harbor as
      `registry.gpaeng.com.au/openwebui/open-webui-base:deploy-gpa` plus an
